@@ -482,6 +482,38 @@ _ALL_FIELDS: list[FieldDef] = [
         hot_reload=True,
     ),
     FieldDef(
+        key="eos.local_evopt_battery_buffer_max_pct",
+        field_type="int",
+        default=0,
+        section="eos",
+        level="standard",
+        description="Decaying safety buffer above min SOC (% of capacity, 0 = disabled). "
+        "Unlike the emergency reserve it applies to every slot and melts away "
+        "towards the next cheap window, absorbing load/PV forecast error so the "
+        "battery does not run empty before cheap energy is available again.",
+        help_url="configuration.html#eos",
+        validation={"min": 0, "max": 50},
+        depends_on={"eos.source": "local_evopt"},
+        display_group="Local Optimizer",
+        hot_reload=True,
+    ),
+    FieldDef(
+        key="eos.local_evopt_battery_buffer_lead_hours",
+        field_type="float",
+        default=8.0,
+        section="eos",
+        level="standard",
+        description="Distance to the next cheap window at which the safety buffer "
+        "reaches full size; closer than that it fades out linearly. Smaller values "
+        "reach full size sooner and therefore reserve more overall; larger values "
+        "ramp more gently and leave the optimiser more freedom.",
+        help_url="configuration.html#eos",
+        validation={"min": 0.25, "max": 48},
+        depends_on={"eos.source": "local_evopt"},
+        display_group="Local Optimizer",
+        hot_reload=True,
+    ),
+    FieldDef(
         key="eos.local_evopt_max_grid_import_w",
         field_type="int",
         default=0,

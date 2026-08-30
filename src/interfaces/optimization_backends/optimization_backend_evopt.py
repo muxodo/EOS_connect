@@ -37,6 +37,8 @@ class EVOptBackend:
         time_zone,
         max_grid_import_w=None,
         max_grid_export_w=None,
+        battery_buffer_max_pct=0,
+        battery_buffer_lead_hours=8.0,
     ):
         self.base_url = base_url
         self.time_frame_base = time_frame_base
@@ -45,6 +47,74 @@ class EVOptBackend:
         self.max_grid_export_w = max_grid_export_w if max_grid_export_w else 10000
         self.last_optimization_runtimes = [0] * 5
         self.last_optimization_runtime_number = 0
+        # Decaying safety buffer above min SOC (see _build_battery_buffer_profile).
+        # 0 disables it and restores the previous request byte for byte.
+        self.battery_buffer_max_pct = max(0, min(50, int(battery_buffer_max_pct or 0)))
+        self.battery_buffer_lead_hours = max(0.25, float(battery_buffer_lead_hours or 8.0))
+
+    def _build_battery_buffer_profile(self, n, price_ts, pv_ts, load_ts, s_min, s_max, capacity_wh):
+        """Per-slot soft SOC floor: a safety buffer above s_min that melts away
+        towards the next moment cheap energy becomes available.
+
+        Motivation: the plan discharges the battery down to min SOC before the
+        next cheap window. If the real load runs higher than forecast, or PV
+        under-delivers, the battery hits the floor early and the shortfall is
+        bought at whatever the price happens to be - typically the morning peak.
+        Holding a reserve that is largest when the checkpoint is far away, and
+        gone by the time it arrives, absorbs that forecast error without
+        distorting the plan when everything goes as expected.
+
+        Returned via the optimiser's existing per-slot ``s_goal`` vector, which
+        is a *soft* constraint with a penalty term. The optimiser may therefore
+        ignore the buffer whenever the price advantage outweighs the penalty,
+        which keeps the reserve economically rational instead of dogmatic. No
+        change to the optimiser itself is needed.
+
+        Returns ``[0.0] * n`` when disabled, which is byte-for-byte what the
+        request contained before this feature existed - the optimiser only
+        creates penalty variables for slots where ``s_goal[t] > 0``.
+        """
+        if self.battery_buffer_max_pct <= 0 or capacity_wh <= 0 or n <= 0:
+            return [0.0] * n
+
+        slot_hours = (self.time_frame_base or 3600) / 3600.0
+        prices = [p for p in price_ts if p is not None]
+        if not prices:
+            return [0.0] * n
+        # "Cheap" as the lower of two rules, because either alone degenerates:
+        # a pure 25th percentile lands on the expensive level when the cheap
+        # window is narrower than a quarter of the horizon (then everything
+        # counts as cheap and the buffer silently disappears), while a pure
+        # share-of-range is dragged around by a single price spike.
+        ordered = sorted(prices)
+        pct25 = ordered[max(0, len(ordered) // 4 - 1)]
+        span = ordered[-1] - ordered[0]
+        cheap = min(pct25, ordered[0] + 0.25 * span)
+
+        # Relief is any slot where cheap energy is available: a cheap price, or PV
+        # already covering the load. The buffer sizes itself by the distance to
+        # the *next* such slot, and is therefore zero while inside one - there is
+        # nothing to bridge when relief is happening right now.
+        relief = [price_ts[t] <= cheap or pv_ts[t] > load_ts[t] for t in range(n)]
+        next_relief = [None] * n
+        nxt = None
+        for t in range(n - 1, -1, -1):
+            if relief[t]:
+                nxt = t
+            next_relief[t] = nxt
+
+        max_buffer_wh = capacity_wh * (self.battery_buffer_max_pct / 100.0)
+        profile = []
+        for t in range(n):
+            if next_relief[t] is None:
+                # No relief left in the horizon: the energy will be needed
+                # regardless, so holding a reserve would only add losses.
+                profile.append(0.0)
+                continue
+            hours_left = (next_relief[t] - t) * slot_hours
+            frac = min(1.0, hours_left / self.battery_buffer_lead_hours)
+            profile.append(min(s_min + max_buffer_wh * frac, s_max))
+        return profile
 
     def optimize(self, eos_request, timeout=180):
         """
@@ -319,8 +389,9 @@ class EVOptBackend:
                     "s_max": s_max,
                     "s_initial": s_initial,
                     "p_demand": [0.0] * n,
-                    # "s_goal": [s_initial] * n,
-                    "s_goal": [0.0] * n,
+                    "s_goal": self._build_battery_buffer_profile(
+                        n, price_ts, pv_ts, load_ts, s_min, s_max, batt_capacity_wh
+                    ),
                     "c_min": 0.0,
                     "c_max": batt_c_max,
                     "d_max": batt_c_max,

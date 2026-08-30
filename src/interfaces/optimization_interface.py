@@ -90,6 +90,12 @@ class OptimizationInterface:
                 emergency_reserve_pct=config.get(
                     "local_evopt_emergency_reserve_pct", 0
                 ),
+                battery_buffer_max_pct=config.get(
+                    "local_evopt_battery_buffer_max_pct", 0
+                ),
+                battery_buffer_lead_hours=config.get(
+                    "local_evopt_battery_buffer_lead_hours", 8
+                ),
                 max_grid_import_w=_max_imp,
                 max_grid_export_w=_max_exp,
             )

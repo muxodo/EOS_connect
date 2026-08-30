@@ -119,11 +119,18 @@ _LOCAL_EVOPT_FIELD_MAP = {
     "eos.local_evopt_charging_strategy": ("charging_strategy", str),
     "eos.local_evopt_discharging_strategy": ("discharging_strategy", str),
     "eos.local_evopt_emergency_reserve_pct": ("emergency_reserve_pct", int),
+    "eos.local_evopt_battery_buffer_max_pct": ("battery_buffer_max_pct", int),
+    "eos.local_evopt_battery_buffer_lead_hours": ("battery_buffer_lead_hours", float),
 }
 
 # Optimizer keys whose change immediately invalidates the current result
 _OPTIMIZER_RUN_TRIGGERS = {
     "eos.dyn_override_discharge_allowed_pv_greater_load",
+    # Switching the buffer on or off changes the plan, so the cached result is
+    # stale immediately - otherwise turning it off would appear to do nothing
+    # until the next scheduled run.
+    "eos.local_evopt_battery_buffer_max_pct",
+    "eos.local_evopt_battery_buffer_lead_hours",
 }
 
 # Price keys whose change immediately invalidates the current optimization result
@@ -492,6 +499,13 @@ class HotReloadAdapter:
         # Clamp emergency_reserve_pct to valid range
         if attr == "emergency_reserve_pct":
             coerced = max(0, min(80, coerced))
+        # Same clamps the constructor applies, so a hot-reloaded value can never
+        # put the backend into a state it could not have started in. 0 disables
+        # the buffer and restores the untouched request.
+        elif attr == "battery_buffer_max_pct":
+            coerced = max(0, min(50, coerced))
+        elif attr == "battery_buffer_lead_hours":
+            coerced = max(0.25, coerced)
 
         old_val = getattr(backend, attr, "?")
         setattr(backend, attr, coerced)

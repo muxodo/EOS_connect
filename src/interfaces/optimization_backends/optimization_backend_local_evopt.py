@@ -62,6 +62,11 @@ class LocalEVOptBackend(EVOptBackend):
         emergency_reserve_pct:    Minimum battery SOC at end-of-horizon (0-80 %).
         max_grid_import_w:        Hard grid import power ceiling in Watts (None = unlimited).
         max_grid_export_w:        Hard grid export power ceiling in Watts (None = unlimited).
+        battery_buffer_max_pct:   Decaying safety buffer above min SOC (0 = off, 0-50 %).
+                                  Unlike emergency_reserve_pct, which only constrains the
+                                  end of the horizon, this applies a soft floor to every
+                                  slot that melts away towards the next cheap window.
+        battery_buffer_lead_hours: How far ahead of that window the buffer is at full size.
     """
 
     def __init__(
@@ -75,12 +80,16 @@ class LocalEVOptBackend(EVOptBackend):
         emergency_reserve_pct=0,
         max_grid_import_w=None,
         max_grid_export_w=None,
+        battery_buffer_max_pct=0,
+        battery_buffer_lead_hours=8.0,
     ):
         # base_url is not used in-process; pass a placeholder so parent __init__ is happy
         super().__init__(
             base_url="local://",
             time_frame_base=time_frame_base,
             time_zone=time_zone,
+            battery_buffer_max_pct=battery_buffer_max_pct,
+            battery_buffer_lead_hours=battery_buffer_lead_hours,
         )
         self.num_threads = num_threads
         self.time_limit = time_limit
