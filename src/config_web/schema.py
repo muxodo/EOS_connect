@@ -339,7 +339,9 @@ _ALL_FIELDS: list[FieldDef] = [
         "weekday one and two weeks back, which cannot know that tomorrow is colder - and an "
         "unschedulable heat pump is a large part of the winter load. Leaves the rest of the "
         "profile untouched, and falls back to the historical value if the sensors or the "
-        "forecast are unavailable.",
+        "forecast are unavailable. With the sensors set but this off, the model is still "
+        "computed and drawn in the chart while the load profile stays unchanged, so it can "
+        "be watched before it is trusted.",
         help_url="configuration.html#load",
         display_group="Sensors",
     ),
