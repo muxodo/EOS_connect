@@ -10,6 +10,24 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
+def temperature_forecast_needed(config):
+    """Whether a temperature forecast has to be fetched for the given config.
+
+    The EOS server needs one, and so does the heat pump load correction, which is
+    computed whenever its sensor is configured - also while the correction itself
+    is switched off, because the model is still published for display.
+
+    It lives here, with the rest of the configuration knowledge, because both the
+    startup path and the hot reload path need it and neither can import the other.
+    The condition used to be written out in both places, and the reload kept the
+    older version, silently switching the forecast back off whenever a PV setting
+    was saved.
+    """
+    return config.get("eos", {}).get("source", "eos_server") == "eos_server" or bool(
+        config.get("load", {}).get("heatpump_sensor", "")
+    )
+
+
 # Keys that stay in config.yaml / options.json (bootstrap) — NOT stored in SQLite.
 # Includes both config.yaml names and HA addon options.json names.
 BOOTSTRAP_KEYS = frozenset({

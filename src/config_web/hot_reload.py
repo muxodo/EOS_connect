@@ -62,6 +62,8 @@ import logging
 import threading
 from datetime import datetime
 
+from .schema import temperature_forecast_needed
+
 logger = logging.getLogger("__main__")
 
 
@@ -897,9 +899,7 @@ class HotReloadAdapter:
                 config_source=config_source,
                 config=config.get("pv_forecast", []),
                 config_special=config.get("evcc", {}),
-                temperature_forecast_enabled=(
-                    config.get("eos", {}).get("source", "eos_server") == "eos_server"
-                ),
+                temperature_forecast_enabled=temperature_forecast_needed(config),
                 timezone=config.get("time_zone", "UTC"),
             )
             self._applied_keys.extend(pending_keys)

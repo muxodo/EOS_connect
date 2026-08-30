@@ -44,6 +44,7 @@ from interfaces.inverters.null_inverter import NullInverter
 from interfaces.inverters.evcc_inverter import EvccInverter
 from interfaces.pv_autoscaler import PvAutoscaler
 from config_web import ConfigWebModule
+from config_web.schema import temperature_forecast_needed
 
 # Check Python version early
 if sys.version_info < (3, 11):
@@ -279,12 +280,7 @@ pv_interface = interface_factory.create_pv_interface(
         "url": config_manager.config.get("evcc", {}).get("url", ""),
         "data_source": config_manager.config.get("data_source", {}),
     },
-    # The EOS server needs a temperature forecast; so does the heat pump load
-    # correction, which is why it can switch the fetch on for other backends too.
-    # Keyed on the sensor rather than the enable flag, because the model is also
-    # computed for display while it is switched off.
-    eos_source == "eos_server"
-    or bool(config_manager.config.get("load", {}).get("heatpump_sensor", "")),
+    temperature_forecast_needed(config_manager.config),
     config_manager.config.get("time_zone", "UTC"),
 )
 
