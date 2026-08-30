@@ -721,6 +721,23 @@ class LoadInterface:
             return None
         return sum(values) / len(values)
 
+    def _align_timestamp(self, stamp, reference):
+        """Make a Home Assistant timestamp comparable to a locally built one.
+
+        The configured time zone is optional, so the reference datetimes derived
+        from datetime.now(self.time_zone) can be naive, while Home Assistant always
+        reports an offset. Subtracting the two raises, which is what this avoids.
+        """
+        if reference.tzinfo is None:
+            if stamp.tzinfo is None:
+                return stamp
+            # astimezone(None) converts to local time, which is what a naive
+            # reference built from datetime.now() without a zone actually means.
+            return stamp.astimezone(self.time_zone).replace(tzinfo=None)
+        if stamp.tzinfo is None:
+            return stamp.replace(tzinfo=reference.tzinfo)
+        return stamp
+
     def _heatpump_profile_for_day(self, start_time, end_time):
         """Per-slot heat pump power for one day, in the same shape and unit as
         get_load_profile_for_day(). One range request, bucketed locally."""
@@ -738,6 +755,7 @@ class LoadInterface:
                 stamp = datetime.fromisoformat(entry["last_updated"].replace("Z", "+00:00"))
             except (ValueError, KeyError, TypeError, AttributeError):
                 continue
+            stamp = self._align_timestamp(stamp, start_time)
             index = int((stamp - start_time).total_seconds() // self.time_frame_base)
             if 0 <= index < num_slots:
                 buckets[index].append(abs(value))
@@ -792,7 +810,27 @@ class LoadInterface:
         """Replace the heat pump's historical share of the profile with one
         derived from the temperature forecast. Returns the profile unchanged on
         any missing prerequisite, so a sensor outage degrades to today's
-        behaviour rather than to a guess."""
+        behaviour rather than to a guess.
+
+        This wrapper also catches unexpected failures. The correction is optional,
+        but it runs inside the optimization loop's only thread: an exception here
+        took that thread down and stopped the house being scheduled at all. No
+        improvement to the load forecast is worth that, so anything unforeseen
+        falls back to the historical profile.
+        """
+        try:
+            return self._heatpump_temperature_model(load_profile, now, reference_days)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "[LOAD-IF] Heat pump model failed - falling back to the historical profile"
+            )
+            self.last_heatpump_forecast = None
+            self.last_heatpump_reference = None
+            self.last_heatpump_fit = None
+            return load_profile
+
+    def _heatpump_temperature_model(self, load_profile, now, reference_days):
+        """Body of the correction; see _apply_heatpump_temperature_model."""
         # Drop the previous run's display data up front: every early return below
         # leaves the profile untouched, and the UI must then show nothing rather
         # than a curve that no longer describes the current forecast.
