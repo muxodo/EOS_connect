@@ -331,6 +331,14 @@ class ChartManager {
             ? tempSeries.map(value => (value === null ? null : Number(value.toFixed(1))))
             : [];
 
+        // An empty dataset still counts as "visible" for the y4 axis' display:'auto',
+        // which would leave an empty temperature scale taking up chart width on every
+        // installation without a heat pump. Hiding the datasets themselves is what
+        // actually retires the axis. A user's own legend toggle lives on the dataset
+        // meta and is not overwritten by this.
+        this.chartInstance.data.datasets[13].hidden = !hpSeries;
+        this.chartInstance.data.datasets[14].hidden = !tempSeries;
+
         this.chartInstance.update('none'); // Update without animation
     }
 
@@ -357,8 +365,8 @@ class ChartManager {
                     { label: `Electricity Price (${localization.currency_minor_unit}/kWh)`, data: [], type: 'line', borderColor: 'rgba(255, 69, 0, 0.8)', backgroundColor: 'rgba(255, 165, 0, 0.2)', borderWidth: 1, yAxisID: 'y1', stepped: true, pointRadius: 1, pointHoverRadius: 4 },
                     { label: 'Electricity Price - Forecast', data: [], type: 'line', borderColor: 'rgba(167, 167, 167, 0.7)', backgroundColor: 'rgba(220, 20, 60, 0.05)', borderWidth: 2, yAxisID: 'y1', stepped: true, pointRadius: 1, pointHoverRadius: 4, fill: false, hidden: true },
                     { label: 'PV Charge Planned', data: [], type: 'line', borderColor: 'transparent', backgroundColor: 'transparent', borderWidth: 0, fill: false, yAxisID: 'y3', pointRadius: 0, pointHoverRadius: 0, stepped: true, hidden: true },
-                    { label: 'Heat Pump (modelled)', data: [], type: 'line', borderColor: 'rgba(220, 120, 255, 0.9)', backgroundColor: 'rgba(220, 120, 255, 0.15)', borderWidth: 1, fill: true, yAxisID: 'y', pointRadius: 0, pointHoverRadius: 4, hidden: false },
-                    { label: 'Outdoor Temperature', data: [], type: 'line', borderColor: 'rgba(120, 200, 255, 0.9)', backgroundColor: 'transparent', borderWidth: 1, borderDash: [4, 3], fill: false, yAxisID: 'y4', pointRadius: 0, pointHoverRadius: 4, hidden: false }
+                    { label: 'Heat Pump (modelled)', data: [], type: 'line', borderColor: 'rgba(220, 120, 255, 0.9)', backgroundColor: 'rgba(220, 120, 255, 0.15)', borderWidth: 1, fill: true, yAxisID: 'y', pointRadius: 0, pointHoverRadius: 4, hidden: true },
+                    { label: 'Outdoor Temperature', data: [], type: 'line', borderColor: 'rgba(120, 200, 255, 0.9)', backgroundColor: 'transparent', borderWidth: 1, borderDash: [4, 3], fill: false, yAxisID: 'y4', pointRadius: 0, pointHoverRadius: 4, hidden: true }
                 ]
             },
             options: {
