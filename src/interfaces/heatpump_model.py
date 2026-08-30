@@ -39,6 +39,15 @@ MIN_REFERENCE_W = 20.0
 # against a hard frost would otherwise produce an arbitrarily large factor.
 MIN_SCALE, MAX_SCALE = 0.0, 5.0
 
+# A slope is only meaningful if the training window actually contains heating.
+# Fitted on days that all sat near or above the heating limit, the slope is noise,
+# and the prediction then extrapolates that noise down to winter temperatures the
+# data never covered. Require a few genuinely cold days and some spread between
+# them before the fit is trusted.
+MIN_HEATING_DAYS = 3
+MIN_HEATING_DEGREES = 2.0
+MIN_DEGREE_SPREAD = 4.0
+
 
 def fit_heating_regression(samples):
     """Least-squares fit of heat pump power against heating degrees.
@@ -68,6 +77,10 @@ def fit_heating_regression(samples):
             # Every day sat on the same side of this base temperature, so the
             # slope is unidentifiable here - a different candidate may still work.
             continue
+        heating_days = [x for x in xs if x >= MIN_HEATING_DEGREES]
+        if len(heating_days) < MIN_HEATING_DAYS or (max(xs) - min(xs)) < MIN_DEGREE_SPREAD:
+            # Too little heating in the window to tell a slope from noise.
+            continue
         slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom
         intercept = mean_y - slope * mean_x
         sse = sum((intercept + slope * x - y) ** 2 for x, y in zip(xs, ys))
@@ -75,7 +88,11 @@ def fit_heating_regression(samples):
             best = (sse, intercept, slope, base_t)
 
     if best is None:
-        logger.debug("[HP-MODEL] No base temperature produced an identifiable slope")
+        logger.info(
+            "[HP-MODEL] No usable fit: the %d-day window contains too little heating "
+            "to establish a temperature response",
+            len(usable),
+        )
         return None
     _, intercept, slope, base_t = best
     if slope <= 0:
@@ -100,12 +117,20 @@ def predict_daily_w(fit, temperature_c):
     return max(0.0, intercept + slope * max(0.0, base_t - temperature_c))
 
 
-def apply_correction(load_profile, hp_reference, predicted_daily_w, slots_per_day):
+def apply_correction(
+    load_profile, hp_reference, predicted_daily_w, slots_per_day, slot_hours
+):
     """Swap the heat pump's historical share for the temperature-based one.
 
-    ``load_profile`` and ``hp_reference`` are per-slot lists in the same unit and
-    of the same length; ``predicted_daily_w`` holds one predicted daily average
-    per day covered by the profile (typically today and tomorrow).
+    ``load_profile`` and ``hp_reference`` are per-slot lists of *energy* in the
+    same unit and of the same length; ``predicted_daily_w`` holds one predicted
+    daily average *power* per day covered by the profile (typically today and
+    tomorrow); ``slot_hours`` is the length of one slot in hours, which is what
+    converts between the two.
+
+    That conversion is the whole reason this argument exists. Without it a 500 W
+    prediction was written into a profile counting watt-hours per quarter hour,
+    inflating the forecast fourfold.
 
     The reference *shape* is kept and only rescaled, because heating is not spread
     evenly over the day - rebuilding it from a daily average alone would discard
@@ -113,6 +138,8 @@ def apply_correction(load_profile, hp_reference, predicted_daily_w, slots_per_da
     shape worth keeping, so the predicted amount is spread evenly instead.
     """
     if not load_profile or not hp_reference or len(hp_reference) != len(load_profile):
+        return load_profile
+    if not slot_hours or slot_hours <= 0:
         return load_profile
 
     corrected = list(load_profile)
@@ -125,13 +152,17 @@ def apply_correction(load_profile, hp_reference, predicted_daily_w, slots_per_da
         window = hp_reference[start:end]
         if not window:
             continue
-        reference_w = sum(window) / len(window)
 
-        if reference_w > MIN_REFERENCE_W:
-            scale = max(MIN_SCALE, min(MAX_SCALE, predicted_w / reference_w))
+        # Everything below is per slot, in the profile's energy unit.
+        predicted_per_slot = predicted_w * slot_hours
+        reference_per_slot = sum(window) / len(window)
+        reference_power_w = reference_per_slot / slot_hours
+
+        if reference_power_w > MIN_REFERENCE_W:
+            scale = max(MIN_SCALE, min(MAX_SCALE, predicted_per_slot / reference_per_slot))
             new_window = [v * scale for v in window]
         else:
-            new_window = [predicted_w] * len(window)
+            new_window = [predicted_per_slot] * len(window)
 
         for offset, (old, new) in enumerate(zip(window, new_window)):
             # Never below zero: the household still consumes something even if the

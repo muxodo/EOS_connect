@@ -68,7 +68,7 @@ def main() -> int:
     # 5. The correction must keep the reference shape and hit the predicted mean.
     profile = [100.0] * SLOTS
     reference = [50.0 if 0 <= i < SLOTS // 2 else 150.0 for i in range(SLOTS)]  # mean 100
-    corrected = apply_correction(profile, reference, [200.0], SLOTS)
+    corrected = apply_correction(profile, reference, [200.0], SLOTS, 1.0)
     new_hp = [c - p + r for c, p, r in zip(corrected, profile, reference)]
     mean_ok = abs(sum(new_hp) / len(new_hp) - 200.0) < 1.0
     shape_ok = abs((new_hp[0] / new_hp[-1]) - (reference[0] / reference[-1])) < 1e-6
@@ -78,7 +78,7 @@ def main() -> int:
         fails.append("correction")
 
     # 6. Never negative, even when the model wants to remove more than is there.
-    corrected = apply_correction([10.0] * SLOTS, [500.0] * SLOTS, [0.0], SLOTS)
+    corrected = apply_correction([10.0] * SLOTS, [500.0] * SLOTS, [0.0], SLOTS, 1.0)
     ok = all(v >= 0 for v in corrected)
     print(f"6. Bleibt nicht-negativ: {'OK' if ok else 'FEHLER'} (min {min(corrected):.1f})")
     if not ok:
@@ -86,7 +86,7 @@ def main() -> int:
 
     # 7. A reference week with no heating has no shape worth scaling, so the
     # predicted amount is spread evenly instead of amplifying noise.
-    corrected = apply_correction([100.0] * SLOTS, [1.0] * SLOTS, [300.0], SLOTS)
+    corrected = apply_correction([100.0] * SLOTS, [1.0] * SLOTS, [300.0], SLOTS, 1.0)
     new_hp = [c - 100.0 + 1.0 for c in corrected]
     ok = all(abs(v - 300.0) < 1.0 for v in new_hp)
     print(f"7. Ohne Heizbetrieb in der Referenz gleichmaessig verteilt: {'OK' if ok else 'FEHLER'}")
@@ -94,11 +94,34 @@ def main() -> int:
         fails.append("flat fallback")
 
     # 8. Missing prerequisites must return the profile untouched, not a guess.
-    same = apply_correction(profile, [], [200.0], SLOTS)
-    ok = same == profile and apply_correction(profile, reference, [None], SLOTS) == profile
+    same = apply_correction(profile, [], [200.0], SLOTS, 1.0)
+    ok = same == profile and apply_correction(profile, reference, [None], SLOTS, 1.0) == profile
     print(f"8. Fehlende Daten -> Profil unveraendert: {'OK' if ok else 'FEHLER'}")
     if not ok:
         fails.append("passthrough")
+
+    # 9. A predicted power must land in the profile as energy per slot. Getting
+    # this wrong inflated a real forecast fourfold at 15-minute resolution.
+    quarter = 0.25
+    flat = [0.0] * SLOTS
+    corrected = apply_correction(flat, [1.0] * SLOTS, [400.0], SLOTS, quarter)
+    added = sum(c - 0.0 + 1.0 for c in corrected) / SLOTS
+    ok = abs(added - 400.0 * quarter) < 0.5
+    print(f"9. Leistung wird als Energie je Slot eingesetzt: {'OK' if ok else 'FEHLER'} "
+          f"({added:.1f} Wh/Slot, erwartet {400.0 * quarter:.1f})")
+    if not ok:
+        fails.append("units")
+
+    # 10. A summer window (no heating at all) must produce no fit. Fitted on such
+    # data the slope is noise, and the prediction extrapolates it to winter
+    # temperatures the window never saw. Real August data did exactly this.
+    summer = [(20.1, 65.0), (20.2, 98.3), (23.4, 99.6), (20.0, 52.4), (18.8, 83.8),
+              (17.2, 75.1), (16.3, 66.1), (17.7, 21.8), (17.7, 146.5), (19.2, 53.1),
+              (18.3, 32.2), (17.6, 56.2), (17.4, 94.8), (21.1, 59.0)]
+    ok = fit_heating_regression(summer) is None
+    print(f"10. Sommerfenster ohne Heizbetrieb -> kein Fit: {'OK' if ok else 'FEHLER'}")
+    if not ok:
+        fails.append("summer window")
 
     print()
     print("ERGEBNIS:", "alle Pruefungen bestanden" if not fails else f"FEHLGESCHLAGEN: {fails}")

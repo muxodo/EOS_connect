@@ -703,23 +703,55 @@ class LoadInterface:
         return additional_load_data
 
     def _daily_mean_from_range(self, entity_id, start_time, end_time):
-        """Average of an entity's states over a range, from a single request.
+        """Time-weighted average of an entity's states over a range, from a single
+        request.
 
         The load profile fetches one slot at a time, which is fine for a handful
         of sensors but would add hundreds of requests per profile build if the
         heat pump were fetched the same way. Daily averages are all the
         regression needs, so one range request per day is enough.
+
+        Weighted by how long each state held, not by how many samples there were.
+        Home Assistant only records on change, and a cycling appliance reports far
+        more often while it runs than while it sits idle: a plain mean of the
+        samples reads a heat pump that is off most of the day as if it were on
+        most of the day. Measured on this installation, the difference is roughly
+        2000 W against a few hundred.
         """
         data = self.fetch_historical_energy_data(entity_id, start_time, end_time)
-        values = []
+        samples = []
         for entry in data or []:
             try:
-                values.append(float(entry["state"]))
-            except (ValueError, KeyError, TypeError):
+                value = float(entry["state"])
+                stamp = self._align_timestamp(
+                    datetime.fromisoformat(entry["last_updated"].replace("Z", "+00:00")),
+                    start_time,
+                )
+            except (ValueError, KeyError, TypeError, AttributeError):
                 continue  # "unknown"/"unavailable" states and gaps
-        if not values:
+            samples.append((stamp, value))
+
+        if not samples:
             return None
-        return sum(values) / len(values)
+        samples.sort(key=lambda item: item[0])
+
+        total_seconds = 0.0
+        weighted = 0.0
+        for index, (stamp, value) in enumerate(samples):
+            # Each state holds until the next one, and the last until the end of
+            # the range.
+            until = samples[index + 1][0] if index + 1 < len(samples) else end_time
+            duration = (until - stamp).total_seconds()
+            if duration <= 0:
+                continue
+            weighted += value * duration
+            total_seconds += duration
+
+        if total_seconds <= 0:
+            # A single sample carries no duration of its own; it is still the only
+            # thing known about the day.
+            return sum(value for _, value in samples) / len(samples)
+        return weighted / total_seconds
 
     def _align_timestamp(self, stamp, reference):
         """Make a Home Assistant timestamp comparable to a locally built one.
@@ -739,8 +771,16 @@ class LoadInterface:
         return stamp
 
     def _heatpump_profile_for_day(self, start_time, end_time):
-        """Per-slot heat pump power for one day, in the same shape and unit as
-        get_load_profile_for_day(). One range request, bucketed locally."""
+        """Per-slot heat pump energy for one day, in the same shape and unit as
+        get_load_profile_for_day() (Wh per slot). One range request, integrated
+        locally.
+
+        Integrated over time rather than averaged over samples, for the same
+        reason as _daily_mean_from_range: Home Assistant records on change, so
+        sample density follows how hard the appliance is working. The reference
+        and the prediction have to be measured the same way, or the scale between
+        them is meaningless.
+        """
         num_slots = int((end_time - start_time).total_seconds() // self.time_frame_base)
         if num_slots <= 0 or not self.heatpump_sensor:
             return []
@@ -748,28 +788,44 @@ class LoadInterface:
         data = self.fetch_historical_energy_data(
             self.heatpump_sensor, start_time, end_time
         )
-        buckets = [[] for _ in range(num_slots)]
+        samples = []
         for entry in data or []:
             try:
-                value = float(entry["state"])
-                stamp = datetime.fromisoformat(entry["last_updated"].replace("Z", "+00:00"))
+                value = abs(float(entry["state"]))
+                stamp = self._align_timestamp(
+                    datetime.fromisoformat(entry["last_updated"].replace("Z", "+00:00")),
+                    start_time,
+                )
             except (ValueError, KeyError, TypeError, AttributeError):
                 continue
-            stamp = self._align_timestamp(stamp, start_time)
-            index = int((stamp - start_time).total_seconds() // self.time_frame_base)
-            if 0 <= index < num_slots:
-                buckets[index].append(abs(value))
+            samples.append((stamp, value))
 
-        interval_hours = self.time_frame_base / 3600.0
+        if not samples:
+            return []
+        samples.sort(key=lambda item: item[0])
+
         profile = []
-        last_known = 0.0
-        for bucket in buckets:
-            if bucket:
-                last_known = sum(bucket) / len(bucket)
-            # A slot with no state change inherits the previous value: the sensor
-            # only reports on change, so an empty bucket means "unchanged", not
-            # "zero" - reading it as zero would fake heat pump downtime.
-            profile.append(round(last_known * interval_hours, 3))
+        index = 0
+        # A state holds until the next one is reported, so a slot with no change
+        # inherits the value that was already in force - reading it as zero would
+        # fake heat pump downtime.
+        current = samples[0][1]
+        for slot in range(num_slots):
+            slot_start = start_time + timedelta(seconds=slot * self.time_frame_base)
+            slot_end = slot_start + timedelta(seconds=self.time_frame_base)
+            while index < len(samples) and samples[index][0] <= slot_start:
+                current = samples[index][1]
+                index += 1
+            watt_seconds = 0.0
+            cursor = slot_start
+            while index < len(samples) and samples[index][0] < slot_end:
+                stamp, value = samples[index]
+                watt_seconds += current * (stamp - cursor).total_seconds()
+                cursor = stamp
+                current = value
+                index += 1
+            watt_seconds += current * (slot_end - cursor).total_seconds()
+            profile.append(round(watt_seconds / 3600.0, 3))
         return profile
 
     def _fit_heatpump_model(self, now):
@@ -886,7 +942,13 @@ class LoadInterface:
                 predict_daily_w(fit, sum(window) / len(window)) if window else None
             )
 
-        corrected = apply_correction(load_profile, reference, predicted, slots_per_day)
+        corrected = apply_correction(
+            load_profile,
+            reference,
+            predicted,
+            slots_per_day,
+            self.time_frame_base / 3600.0,
+        )
         # The predicted heat pump share, recovered from the corrected profile
         # rather than recomputed, so the chart cannot drift away from what the
         # correction actually produced.
