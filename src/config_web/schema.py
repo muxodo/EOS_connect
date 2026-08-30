@@ -304,6 +304,59 @@ _ALL_FIELDS: list[FieldDef] = [
         display_group="Sensors",
     ),
     FieldDef(
+        key="load.heatpump_sensor",
+        field_type="sensor",
+        default="",
+        section="load",
+        level="standard",
+        description="Entity/item for heat pump power in watts (leave empty if not used). "
+        "Needed for the temperature-aware load correction below.",
+        labels=["restart_required"],
+        help_url="configuration.html#load",
+        display_group="Sensors",
+    ),
+    FieldDef(
+        key="load.outdoor_temperature_sensor",
+        field_type="sensor",
+        default="",
+        section="load",
+        level="standard",
+        description="Entity/item for measured outdoor temperature in degC. Used to learn how "
+        "much the heat pump draws per degree; the forecast itself comes from the weather "
+        "service.",
+        labels=["restart_required"],
+        help_url="configuration.html#load",
+        display_group="Sensors",
+    ),
+    FieldDef(
+        key="load.heatpump_temperature_model_enabled",
+        field_type="bool",
+        default=False,
+        section="load",
+        level="standard",
+        description="Predict the heat pump's share of the load from the outdoor temperature "
+        "forecast instead of from history alone. The load profile is built from the same "
+        "weekday one and two weeks back, which cannot know that tomorrow is colder - and an "
+        "unschedulable heat pump is a large part of the winter load. Leaves the rest of the "
+        "profile untouched, and falls back to the historical value if the sensors or the "
+        "forecast are unavailable.",
+        help_url="configuration.html#load",
+        display_group="Sensors",
+    ),
+    FieldDef(
+        key="load.heatpump_model_days",
+        field_type="int",
+        default=14,
+        section="load",
+        level="expert",
+        description="How many past days are used to learn the heat pump's response to "
+        "temperature. Longer windows steady the fit but react more slowly to changes in "
+        "heating behaviour.",
+        help_url="configuration.html#load",
+        validation={"min": 5, "max": 60},
+        display_group="Sensors",
+    ),
+    FieldDef(
         key="load.additional_load_1_sensor",
         field_type="sensor",
         default="additional_load_1_sensor",

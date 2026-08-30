@@ -408,7 +408,7 @@ async function init() {
 
         // Fetch all data using the dataManager
         const allData = await dataManager.fetchAllData(isTestMode, currentTestScenario);
-        const { request: data_request, response: data_response, controls: data_controls, priceInfo: data_priceInfo } = allData;
+        const { request: data_request, response: data_response, controls: data_controls, priceInfo: data_priceInfo, heatpumpInfo: data_heatpumpInfo } = allData;
 
         // Extract max_charge_power_w from request data
         max_charge_power_w = data_request["pv_akku"] && data_request["pv_akku"].hasOwnProperty("max_ladeleistung_w")
@@ -440,10 +440,10 @@ async function init() {
 
         // Update or create chart using chartManager
         if (chartManager.chartInstance) {
-            chartManager.updateChart(data_request, data_response, data_controls, data_priceInfo);
+            chartManager.updateChart(data_request, data_response, data_controls, data_priceInfo, data_heatpumpInfo);
             document.getElementById('overlay').style.display = 'none';
         } else {
-            chartManager.createChart(data_request, data_response, data_controls, data_priceInfo);
+            chartManager.createChart(data_request, data_response, data_controls, data_priceInfo, data_heatpumpInfo);
             document.getElementById('overlay').style.display = 'none';
         }
 

@@ -20,7 +20,7 @@ class ChartManager {
     /**
      * Update existing chart with new data
      */
-    updateChart(data_request, data_response, data_controls, priceInfo = null) {
+    updateChart(data_request, data_response, data_controls, priceInfo = null, heatpumpInfo = null) {
         if (!this.chartInstance) {
             console.warn('[ChartManager] No chart instance to update');
             return;
@@ -307,13 +307,37 @@ class ChartManager {
             this.chartInstance.options.scales.y1.title.text = `Price (${localization.currency_minor_unit}/kWh)`;
         }
 
+        // Heat pump and outdoor temperature (display only, see heatpump_info.json).
+        // Both arrays are indexed from midnight exactly like ems.gesamtlast, so they
+        // are rotated to "now" the same way - a different alignment here would put
+        // the temperature next to the wrong load slot.
+        const slotCount = data_response["result"]["Last_Wh_pro_Stunde"].length;
+        const rotateToNow = (arr) => {
+            if (!Array.isArray(arr) || arr.length === 0) return null;
+            if (time_frame_base === 900) {
+                return arr.slice(currentSlot).concat(arr.slice(0, currentSlot)).slice(0, slotCount);
+            }
+            return arr.slice(currentHour).concat(arr.slice(24, 48)).slice(0, slotCount);
+        };
+
+        // Wh per slot like the load curve, so it is shown in kWh on the same axis.
+        const hpSeries = rotateToNow(heatpumpInfo?.heatpump_forecast);
+        this.chartInstance.data.datasets[13].data = hpSeries
+            ? hpSeries.map(value => (value / 1000).toFixed(3))
+            : [];
+
+        const tempSeries = rotateToNow(heatpumpInfo?.temperature_forecast);
+        this.chartInstance.data.datasets[14].data = tempSeries
+            ? tempSeries.map(value => (value === null ? null : Number(value.toFixed(1))))
+            : [];
+
         this.chartInstance.update('none'); // Update without animation
     }
 
     /**
      * Create new chart instance
      */
-    createChart(data_request, data_response, data_controls, priceInfo = null) {
+    createChart(data_request, data_response, data_controls, priceInfo = null, heatpumpInfo = null) {
         const ctx = document.getElementById('energyChart').getContext('2d');
         this.chartInstance = new Chart(ctx, {
             type: 'bar',
@@ -332,7 +356,9 @@ class ChartManager {
                     { label: 'Dynamic Discharge Allowed (PV > Load)', data: [], type: 'line', borderColor: 'rgba(50, 205, 50, 0.6)', backgroundColor: 'rgba(50, 205, 50, 0.1)', borderWidth: 1, fill: true, yAxisID: 'y3', pointRadius: 1, pointHoverRadius: 4, stepped: true, hidden: false },
                     { label: `Electricity Price (${localization.currency_minor_unit}/kWh)`, data: [], type: 'line', borderColor: 'rgba(255, 69, 0, 0.8)', backgroundColor: 'rgba(255, 165, 0, 0.2)', borderWidth: 1, yAxisID: 'y1', stepped: true, pointRadius: 1, pointHoverRadius: 4 },
                     { label: 'Electricity Price - Forecast', data: [], type: 'line', borderColor: 'rgba(167, 167, 167, 0.7)', backgroundColor: 'rgba(220, 20, 60, 0.05)', borderWidth: 2, yAxisID: 'y1', stepped: true, pointRadius: 1, pointHoverRadius: 4, fill: false, hidden: true },
-                    { label: 'PV Charge Planned', data: [], type: 'line', borderColor: 'transparent', backgroundColor: 'transparent', borderWidth: 0, fill: false, yAxisID: 'y3', pointRadius: 0, pointHoverRadius: 0, stepped: true, hidden: true }
+                    { label: 'PV Charge Planned', data: [], type: 'line', borderColor: 'transparent', backgroundColor: 'transparent', borderWidth: 0, fill: false, yAxisID: 'y3', pointRadius: 0, pointHoverRadius: 0, stepped: true, hidden: true },
+                    { label: 'Heat Pump (modelled)', data: [], type: 'line', borderColor: 'rgba(220, 120, 255, 0.9)', backgroundColor: 'rgba(220, 120, 255, 0.15)', borderWidth: 1, fill: true, yAxisID: 'y', pointRadius: 0, pointHoverRadius: 4, hidden: false },
+                    { label: 'Outdoor Temperature', data: [], type: 'line', borderColor: 'rgba(120, 200, 255, 0.9)', backgroundColor: 'transparent', borderWidth: 1, borderDash: [4, 3], fill: false, yAxisID: 'y4', pointRadius: 0, pointHoverRadius: 4, hidden: false }
                 ]
             },
             options: {
@@ -343,11 +369,21 @@ class ChartManager {
                     y1: { beginAtZero: true, position: 'right', title: { display: true, text: `Price (${localization.currency_minor_unit}/kWh)`, color: 'lightgray' }, grid: { drawOnChartArea: false }, ticks: { color: 'lightgray', callback: value => value.toFixed(1) } },
                     y2: { beginAtZero: true, position: 'right', title: { display: true, text: 'Battery SOC (%)', color: 'darkgray' }, grid: { drawOnChartArea: false }, ticks: { color: 'darkgray', callback: value => value.toFixed(0) } },
                     y3: { beginAtZero: true, position: 'right', display: false, title: { display: true, text: 'AC Charge', color: 'darkgray' }, grid: { drawOnChartArea: false }, ticks: { color: 'darkgray', callback: value => value.toFixed(2) } },
+                    // 'auto' keeps the axis out of the way until the temperature
+                    // series is actually shown - it is off by default in summer,
+                    // when the heat pump model has nothing to say.
+                    y4: { position: 'right', display: 'auto', title: { display: true, text: 'Outdoor Temp (°C)', color: 'darkgray' }, grid: { drawOnChartArea: false }, ticks: { color: 'darkgray', callback: value => value.toFixed(0) } },
                     x: { grid: { color: 'rgb(54, 54, 54)' }, ticks: { color: 'lightgray', font: { size: 10 } } }
                 },
                 plugins: {
-                    legend: { display: !isMobile(), labels: { color: 'lightgray', filter: item => {
+                    legend: { display: !isMobile(), labels: { color: 'lightgray', filter: (item, chartData) => {
                         if (item.text === 'PV Charge Planned') return false;
+                        // No heat pump model and no temperature forecast means there is
+                        // nothing to toggle - an empty legend entry would only invite
+                        // clicking on a series that cannot appear.
+                        if (item.text === 'Heat Pump (modelled)' || item.text === 'Outdoor Temperature') {
+                            return (chartData?.datasets?.[item.datasetIndex]?.data?.length || 0) > 0;
+                        }
                         if (item.text === 'Dynamic Discharge Allowed (PV > Load)' &&
                             !(data_controls?.current_states?.dyn_override_discharge_allowed_enabled)) return false;
                         return true;
@@ -398,6 +434,10 @@ class ChartManager {
                                     return `${label}: ${value}`;
                                 else if (label === 'PV Charge Planned')
                                     return null; // hidden carrier, suppress tooltip entry
+                                else if (label === 'Heat Pump (modelled)')
+                                    return `${label}: ${value} kWh`;
+                                else if (label === 'Outdoor Temperature')
+                                    return `${label}: ${value.toFixed(1)} °C`;
                                 return `${label}: ${value}`;
                             }
                         }
@@ -409,7 +449,7 @@ class ChartManager {
         // Set global reference for legacy compatibility
         chartInstance = this.chartInstance;
 
-        this.updateChart(data_request, data_response, data_controls, priceInfo); // Feed the content immediately after creation
+        this.updateChart(data_request, data_response, data_controls, priceInfo, heatpumpInfo); // Feed the content immediately after creation
     }
 
     /**

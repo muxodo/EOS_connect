@@ -145,24 +145,51 @@ class DataManager {
     }
 
     /**
+     * Fetch outdoor temperature forecast and modelled heat pump share.
+     * Failures are not fatal: the chart simply omits both series.
+     */
+    async fetchHeatpumpInfo() {
+        const empty = {
+            enabled: false,
+            temperature_forecast: null,
+            heatpump_forecast: null,
+            heatpump_reference: null,
+            fit: null,
+            timestamp: new Date().toISOString(),
+            api_version: "0.0.1"
+        };
+        try {
+            const response = await fetch('json/heatpump_info.json?nocache=' + Date.now());
+            if (!response.ok) {
+                return empty;
+            }
+            return await response.json();
+        } catch (error) {
+            return empty;
+        }
+    }
+
+    /**
      * Fetch all data needed for initialization
      * Returns both request and response data
      */
     async fetchAllData(isTestMode = false, testScenario = null) {
         // testScenario != 'LIVE' ? console.log("[DataManager] Fetching all data in TEST mode") : null;
         try {
-            const [requestData, responseData, controlsData, priceInfo] = await Promise.all([
+            const [requestData, responseData, controlsData, priceInfo, heatpumpInfo] = await Promise.all([
                 this.fetchOptimizationRequest(isTestMode),
                 this.fetchOptimizationResponse(isTestMode),
                 this.fetchCurrentControls(testScenario),
-                this.fetchPriceInfo()
+                this.fetchPriceInfo(),
+                this.fetchHeatpumpInfo()
             ]);
 
             return {
                 request: requestData,
                 response: responseData,
                 controls: controlsData,
-                priceInfo: priceInfo
+                priceInfo: priceInfo,
+                heatpumpInfo: heatpumpInfo
             };
         } catch (error) {
             console.error("[DataManager] Error fetching all data:", error);

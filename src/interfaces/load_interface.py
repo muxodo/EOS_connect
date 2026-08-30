@@ -14,6 +14,8 @@ import random
 import requests
 import pytz
 
+from .heatpump_model import apply_correction, fit_heating_regression, predict_daily_w
+
 logger = logging.getLogger("__main__")
 logger.info("[LOAD-IF] loading module ")
 
@@ -37,6 +39,23 @@ class LoadInterface:
         self.load_sensor = config.get("load_sensor", "")
         self.car_charge_load_sensor = config.get("car_charge_load_sensor", "")
         self.additional_load_1_sensor = config.get("additional_load_1_sensor", "")
+        # Temperature-aware heat pump correction (see heatpump_model.py). Disabled
+        # by default; with it off the load profile is byte-for-byte unchanged.
+        self.heatpump_sensor = config.get("heatpump_sensor", "")
+        self.heatpump_temperature_model_enabled = bool(
+            config.get("heatpump_temperature_model_enabled", False)
+        )
+        self.heatpump_model_days = max(5, int(config.get("heatpump_model_days", 14) or 14))
+        self.outdoor_temperature_sensor = config.get("outdoor_temperature_sensor", "")
+        # Filled by eos_connect.py before the profile is requested; a list of
+        # per-slot forecast temperatures, or None when unavailable.
+        self.temperature_forecast = None
+        # Last correction, exposed for display only (see /json/heatpump_info.json).
+        # None whenever the correction did not run, so the UI shows nothing rather
+        # than a stale curve from an earlier run.
+        self.last_heatpump_forecast = None
+        self.last_heatpump_reference = None
+        self.last_heatpump_fit = None
         raw_token = config.get("access_token", "")
         # Strip leading/trailing whitespace that can be introduced by YAML >- block
         # scalar style when long tokens wrap across multiple lines
@@ -683,6 +702,174 @@ class LoadInterface:
         # print(f'HA Car load data: {car_load_data}')
         return additional_load_data
 
+    def _daily_mean_from_range(self, entity_id, start_time, end_time):
+        """Average of an entity's states over a range, from a single request.
+
+        The load profile fetches one slot at a time, which is fine for a handful
+        of sensors but would add hundreds of requests per profile build if the
+        heat pump were fetched the same way. Daily averages are all the
+        regression needs, so one range request per day is enough.
+        """
+        data = self.fetch_historical_energy_data(entity_id, start_time, end_time)
+        values = []
+        for entry in data or []:
+            try:
+                values.append(float(entry["state"]))
+            except (ValueError, KeyError, TypeError):
+                continue  # "unknown"/"unavailable" states and gaps
+        if not values:
+            return None
+        return sum(values) / len(values)
+
+    def _heatpump_profile_for_day(self, start_time, end_time):
+        """Per-slot heat pump power for one day, in the same shape and unit as
+        get_load_profile_for_day(). One range request, bucketed locally."""
+        num_slots = int((end_time - start_time).total_seconds() // self.time_frame_base)
+        if num_slots <= 0 or not self.heatpump_sensor:
+            return []
+
+        data = self.fetch_historical_energy_data(
+            self.heatpump_sensor, start_time, end_time
+        )
+        buckets = [[] for _ in range(num_slots)]
+        for entry in data or []:
+            try:
+                value = float(entry["state"])
+                stamp = datetime.fromisoformat(entry["last_updated"].replace("Z", "+00:00"))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+            index = int((stamp - start_time).total_seconds() // self.time_frame_base)
+            if 0 <= index < num_slots:
+                buckets[index].append(abs(value))
+
+        interval_hours = self.time_frame_base / 3600.0
+        profile = []
+        last_known = 0.0
+        for bucket in buckets:
+            if bucket:
+                last_known = sum(bucket) / len(bucket)
+            # A slot with no state change inherits the previous value: the sensor
+            # only reports on change, so an empty bucket means "unchanged", not
+            # "zero" - reading it as zero would fake heat pump downtime.
+            profile.append(round(last_known * interval_hours, 3))
+        return profile
+
+    def _fit_heatpump_model(self, now):
+        """Regression of daily heat pump power against daily outdoor temperature,
+        over the configured trailing window. None if it cannot be established."""
+        if not self.heatpump_sensor or not self.outdoor_temperature_sensor:
+            return None
+        samples = []
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        for days_back in range(1, self.heatpump_model_days + 1):
+            day_start = midnight - timedelta(days=days_back)
+            day_end = day_start + timedelta(days=1)
+            hp = self._daily_mean_from_range(self.heatpump_sensor, day_start, day_end)
+            temp = self._daily_mean_from_range(
+                self.outdoor_temperature_sensor, day_start, day_end
+            )
+            if hp is not None and temp is not None:
+                samples.append((temp, abs(hp)))
+        fit = fit_heating_regression(samples)
+        if fit is None:
+            logger.info(
+                "[LOAD-IF] Heat pump model: no usable fit from %d days - "
+                "leaving the load profile untouched",
+                len(samples),
+            )
+        else:
+            intercept, slope, base_t = fit
+            logger.info(
+                "[LOAD-IF] Heat pump model: %.0f W %+.1f W/K below %.0f degC (%d days)",
+                intercept,
+                slope,
+                base_t,
+                len(samples),
+            )
+        return fit
+
+    def _apply_heatpump_temperature_model(self, load_profile, now, reference_days):
+        """Replace the heat pump's historical share of the profile with one
+        derived from the temperature forecast. Returns the profile unchanged on
+        any missing prerequisite, so a sensor outage degrades to today's
+        behaviour rather than to a guess."""
+        # Drop the previous run's display data up front: every early return below
+        # leaves the profile untouched, and the UI must then show nothing rather
+        # than a curve that no longer describes the current forecast.
+        self.last_heatpump_forecast = None
+        self.last_heatpump_reference = None
+        self.last_heatpump_fit = None
+        # Deliberately gated on the sensor alone, not on the enable flag: with a
+        # sensor configured the model is always computed and published for display,
+        # but only applied when enabled. That allows watching what it would do for
+        # a few days without it touching a single scheduling decision.
+        if not self.heatpump_sensor:
+            return load_profile
+        if not self.temperature_forecast:
+            logger.info("[LOAD-IF] Heat pump model: no temperature forecast - skipping")
+            return load_profile
+
+        fit = self._fit_heatpump_model(now)
+        if fit is None:
+            return load_profile
+
+        slots_per_day = int(86400 // self.time_frame_base)
+
+        # Reference: the heat pump's own contribution on exactly the days the
+        # load profile was built from, combined the same way.
+        reference = []
+        for day_pair in reference_days:
+            profiles = [self._heatpump_profile_for_day(d, d + timedelta(days=1)) for d in day_pair]
+            profiles = [p for p in profiles if p]
+            if not profiles:
+                logger.info("[LOAD-IF] Heat pump model: no reference history - skipping")
+                return load_profile
+            length = min(len(p) for p in profiles)
+            reference.extend(
+                sum(p[i] for p in profiles) / len(profiles) for i in range(length)
+            )
+
+        if len(reference) != len(load_profile):
+            logger.info(
+                "[LOAD-IF] Heat pump model: reference length %d != profile %d - skipping",
+                len(reference),
+                len(load_profile),
+            )
+            return load_profile
+
+        # One predicted daily average per day the profile covers.
+        predicted = []
+        for day_index in range(len(load_profile) // slots_per_day):
+            window = self.temperature_forecast[
+                day_index * slots_per_day : (day_index + 1) * slots_per_day
+            ]
+            window = [t for t in window if t is not None]
+            predicted.append(
+                predict_daily_w(fit, sum(window) / len(window)) if window else None
+            )
+
+        corrected = apply_correction(load_profile, reference, predicted, slots_per_day)
+        # The predicted heat pump share, recovered from the corrected profile
+        # rather than recomputed, so the chart cannot drift away from what the
+        # correction actually produced.
+        self.last_heatpump_forecast = [
+            c - p + r for c, p, r in zip(corrected, load_profile, reference)
+        ]
+        self.last_heatpump_reference = list(reference)
+        self.last_heatpump_fit = fit
+        before = sum(load_profile) / len(load_profile)
+        after = sum(corrected) / len(corrected)
+        logger.info(
+            "[LOAD-IF] Heat pump model %s: mean load %.0f -> %.0f Wh/slot (%+.1f%%)",
+            "applied" if self.heatpump_temperature_model_enabled else "observed only",
+            before,
+            after,
+            100 * (after - before) / before if before else 0.0,
+        )
+        if not self.heatpump_temperature_model_enabled:
+            return load_profile
+        return corrected
+
     def get_load_profile_for_day(self, start_time, end_time):
         """
         Retrieves the load profile for a specific day by fetching energy data from Home Assistant
@@ -980,8 +1167,18 @@ class LoadInterface:
                     "[LOAD-IF] Temporary default profile active -"
                     + " will improve with collected data"
                 )
+            # A fallback profile is not built from the reference days, so the heat
+            # pump reference would not line up with it.
+            return load_profile
 
-        return load_profile
+        return self._apply_heatpump_temperature_model(
+            load_profile,
+            now,
+            [
+                (day_one_week_before, day_two_week_before),
+                (day_tomorrow_one_week_before, day_tomorrow_two_week_before),
+            ],
+        )
 
     def get_load_profile(self, tgt_duration, start_time=None):
         """

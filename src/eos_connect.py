@@ -279,7 +279,12 @@ pv_interface = interface_factory.create_pv_interface(
         "url": config_manager.config.get("evcc", {}).get("url", ""),
         "data_source": config_manager.config.get("data_source", {}),
     },
-    eos_source == "eos_server",
+    # The EOS server needs a temperature forecast; so does the heat pump load
+    # correction, which is why it can switch the fetch on for other backends too.
+    # Keyed on the sensor rather than the enable flag, because the model is also
+    # computed for display while it is switched off.
+    eos_source == "eos_server"
+    or bool(config_manager.config.get("load", {}).get("heatpump_sensor", "")),
     config_manager.config.get("time_zone", "UTC"),
 )
 
@@ -633,6 +638,10 @@ def create_optimize_request():
         # constant PriceInterface value
         einspeiseverguetung_euro_pro_wh = feed_in_price_interface.get_current_feedin_prices()
         slots_per_hour = 3600 // time_frame_base
+        # Hand over the temperature forecast before the profile is built: the heat
+        # pump correction needs it and the load interface has no forecast source
+        # of its own. None when disabled, which the correction treats as "skip".
+        load_interface.temperature_forecast = pv_interface.get_current_temp_forecast()
         gesamtlast = load_interface.get_load_profile(EOS_TGT_DURATION * slots_per_hour)
 
         eos_source_for_scale = config_manager.config.get("eos", {}).get("source", "eos_server")
@@ -1873,6 +1882,53 @@ def get_price_info():
         "forecast_start_index": forecast_metadata.get("forecast_start_index"),
         "forecast_type": forecast_metadata.get("forecast_type"),
         "forecast_source": forecast_metadata.get("forecast_source"),
+        "timestamp": datetime.now(time_zone).isoformat(),
+        "api_version": "0.0.1",
+    }
+    response = Response(
+        json.dumps(response_data, indent=4), content_type="application/json"
+    )
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+@app.route("/json/heatpump_info.json", methods=["GET"])
+def get_heatpump_info():
+    """
+    Returns the outdoor temperature forecast and the modelled heat pump share of
+    the load forecast, for display only.
+
+    Both series carry the same indexing as ems.gesamtlast in optimize_request.json
+    (slot 0 is midnight of the current day), so the chart can reuse the slicing it
+    already does for the load curve. heatpump_forecast is null whenever the
+    correction did not run, which the UI shows as an absent series rather than a
+    flat zero line - "no model" and "model says zero" are different statements.
+    """
+    fit = load_interface.last_heatpump_fit
+    # With the forecast disabled the interface hands back a constant 15 degC
+    # placeholder. Drawing that as a temperature curve would look like a real
+    # measurement, so report no series at all instead.
+    temperature = (
+        pv_interface.get_current_temp_forecast()
+        if pv_interface.temperature_forecast_enabled
+        else None
+    )
+    response_data = {
+        "enabled": bool(load_interface.heatpump_temperature_model_enabled),
+        "temperature_forecast": temperature,
+        "heatpump_forecast": load_interface.last_heatpump_forecast,
+        "heatpump_reference": load_interface.last_heatpump_reference,
+        "fit": (
+            None
+            if fit is None
+            else {
+                "intercept_w": round(fit[0], 1),
+                "slope_w_per_heating_degree": round(fit[1], 1),
+                "base_temperature_c": fit[2],
+            }
+        ),
         "timestamp": datetime.now(time_zone).isoformat(),
         "api_version": "0.0.1",
     }
