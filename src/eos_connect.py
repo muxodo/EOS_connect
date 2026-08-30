@@ -269,7 +269,7 @@ pv_interface = interface_factory.create_pv_interface(
     time_frame_base,
     config_manager.config.get("evcc", {}),
     config_manager.config.get("data_source", {}),
-    eos_source,
+    temperature_forecast_needed(config_manager.config),
     config_manager.config.get("time_zone", "UTC"),
     critical=False,
 ) or PvInterface(

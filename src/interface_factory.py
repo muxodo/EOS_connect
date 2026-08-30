@@ -212,7 +212,7 @@ class InterfaceFactory:
         time_frame_base: int,
         evcc_config: Dict[str, Any],
         data_source_config: Dict[str, Any],
-        eos_source: str,
+        temperature_forecast_enabled: bool,
         time_zone_str: str,
         critical: bool = False,
     ):
@@ -225,7 +225,9 @@ class InterfaceFactory:
             time_frame_base: Base time frame in seconds
             evcc_config: EVCC configuration
             data_source_config: Data source configuration (for HA integration)
-            eos_source: EOS source type
+            temperature_forecast_enabled: Whether to fetch a temperature forecast;
+                decided by schema.temperature_forecast_needed(), which is the only
+                place that condition is written down
             time_zone_str: Timezone string
             critical: Whether interface is critical (non-critical by default)
             
@@ -256,7 +258,7 @@ class InterfaceFactory:
                 pv_forecast,
                 time_frame_base,
                 config_special,
-                eos_source == "eos_server",
+                temperature_forecast_enabled,
                 time_zone_str,
             ),
         )
