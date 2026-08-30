@@ -1903,14 +1903,16 @@ def get_heatpump_info():
     flat zero line - "no model" and "model says zero" are different statements.
     """
     fit = load_interface.last_heatpump_fit
-    # With the forecast disabled the interface hands back a constant 15 degC
-    # placeholder. Drawing that as a temperature curve would look like a real
-    # measurement, so report no series at all instead.
-    temperature = (
-        pv_interface.get_current_temp_forecast()
-        if pv_interface.temperature_forecast_enabled
-        else None
-    )
+    # Only publish a temperature series that carries information. A disabled
+    # forecast hands back a constant 15 degC placeholder, and a failed fetch (the
+    # weather API returning 500, say) can leave a run of zeros. Both are constant,
+    # and a real 48 hour forecast never is - so a constant series means "no data",
+    # and drawing it would make a placeholder look like a measurement.
+    temperature = None
+    if pv_interface.temperature_forecast_enabled:
+        candidate = pv_interface.get_current_temp_forecast()
+        if candidate and len(set(candidate)) > 1:
+            temperature = candidate
     response_data = {
         "enabled": bool(load_interface.heatpump_temperature_model_enabled),
         "temperature_forecast": temperature,
