@@ -514,6 +514,25 @@ _ALL_FIELDS: list[FieldDef] = [
         hot_reload=True,
     ),
     FieldDef(
+        key="eos.local_evopt_battery_buffer_penalty_scale",
+        field_type="float",
+        default=1.0,
+        section="eos",
+        level="expert",
+        description="How strictly the safety buffer is enforced. 1.0 uses the optimizer's "
+        "own goal weight and makes the buffer behave like an obligation, bought at almost "
+        "any cost. The penalty is charged in every slot the goal stays unmet, so it adds up "
+        "over the horizon and the weight has to drop a long way before the buffer is weighed "
+        "economically: values from 1.0 down to 0.01 give an identical plan, and the optimizer "
+        "only starts trading the buffer away below about 0.001. Only applies while the buffer "
+        "is enabled.",
+        help_url="configuration.html#eos",
+        validation={"min": 0.00001, "max": 1.0},
+        depends_on={"eos.source": "local_evopt"},
+        display_group="Local Optimizer",
+        hot_reload=True,
+    ),
+    FieldDef(
         key="eos.local_evopt_max_grid_import_w",
         field_type="int",
         default=0,

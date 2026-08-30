@@ -39,6 +39,7 @@ class EVOptBackend:
         max_grid_export_w=None,
         battery_buffer_max_pct=0,
         battery_buffer_lead_hours=8.0,
+        battery_buffer_penalty_scale=1.0,
     ):
         self.base_url = base_url
         self.time_frame_base = time_frame_base
@@ -51,6 +52,15 @@ class EVOptBackend:
         # 0 disables it and restores the previous request byte for byte.
         self.battery_buffer_max_pct = max(0, min(50, int(battery_buffer_max_pct or 0)))
         self.battery_buffer_lead_hours = max(0.25, float(battery_buffer_lead_hours or 8.0))
+        # 1.0 = the optimiser's own goal weight (tier-1), which makes the buffer
+        # effectively mandatory and bought at almost any cost. The penalty is
+        # charged per slot while the goal is unmet, so it accumulates over the
+        # horizon and the weight has to come down by about the slot count before
+        # the buffer is weighed economically - measured: no change at all from
+        # 1.0 down to 0.01, trading starts below ~0.001.
+        self.battery_buffer_penalty_scale = max(
+            0.00001, min(1.0, float(battery_buffer_penalty_scale or 1.0))
+        )
 
     def _build_battery_buffer_profile(self, n, price_ts, pv_ts, load_ts, s_min, s_max, capacity_wh):
         """Per-slot soft SOC floor: a safety buffer above s_min that melts away
@@ -64,11 +74,15 @@ class EVOptBackend:
         gone by the time it arrives, absorbs that forecast error without
         distorting the plan when everything goes as expected.
 
-        Returned via the optimiser's existing per-slot ``s_goal`` vector, which
-        is a *soft* constraint with a penalty term. The optimiser may therefore
-        ignore the buffer whenever the price advantage outweighs the penalty,
-        which keeps the reserve economically rational instead of dogmatic. No
-        change to the optimiser itself is needed.
+        Returned via the optimiser's existing per-slot ``s_goal`` vector, so the
+        request builder alone expresses the whole feature.
+
+        ``s_goal`` is nominally a soft constraint, but its default weight sits in
+        the optimiser's tier-1 "strong avoid" band and is charged again in every
+        slot the goal stays unmet, so at default stiffness the buffer is honoured
+        at almost any cost rather than weighed. ``battery_buffer_penalty_scale``
+        exists to bring that weight down to where it becomes an actual economic
+        trade-off.
 
         Returns ``[0.0] * n`` when disabled, which is byte-for-byte what the
         request contained before this feature existed - the optimiser only
@@ -391,6 +405,13 @@ class EVOptBackend:
                     "p_demand": [0.0] * n,
                     "s_goal": self._build_battery_buffer_profile(
                         n, price_ts, pv_ts, load_ts, s_min, s_max, batt_capacity_wh
+                    ),
+                    # Only softens the goal when the buffer is actually in use; a
+                    # plain charging deadline must keep the full tier-1 weight.
+                    "s_goal_penalty_scale": (
+                        self.battery_buffer_penalty_scale
+                        if self.battery_buffer_max_pct > 0
+                        else None
                     ),
                     "c_min": 0.0,
                     "c_max": batt_c_max,

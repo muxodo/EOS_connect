@@ -121,6 +121,7 @@ _LOCAL_EVOPT_FIELD_MAP = {
     "eos.local_evopt_emergency_reserve_pct": ("emergency_reserve_pct", int),
     "eos.local_evopt_battery_buffer_max_pct": ("battery_buffer_max_pct", int),
     "eos.local_evopt_battery_buffer_lead_hours": ("battery_buffer_lead_hours", float),
+    "eos.local_evopt_battery_buffer_penalty_scale": ("battery_buffer_penalty_scale", float),
 }
 
 # Optimizer keys whose change immediately invalidates the current result
@@ -131,6 +132,7 @@ _OPTIMIZER_RUN_TRIGGERS = {
     # until the next scheduled run.
     "eos.local_evopt_battery_buffer_max_pct",
     "eos.local_evopt_battery_buffer_lead_hours",
+    "eos.local_evopt_battery_buffer_penalty_scale",
 }
 
 # Price keys whose change immediately invalidates the current optimization result
@@ -506,6 +508,8 @@ class HotReloadAdapter:
             coerced = max(0, min(50, coerced))
         elif attr == "battery_buffer_lead_hours":
             coerced = max(0.25, coerced)
+        elif attr == "battery_buffer_penalty_scale":
+            coerced = max(0.00001, min(1.0, coerced))
 
         old_val = getattr(backend, attr, "?")
         setattr(backend, attr, coerced)

@@ -225,6 +225,19 @@ class BatteryConfig:
     c_priority: int = 0
     # Emergency reserve: minimum end-of-horizon SOC in Wh (EOS_connect extension)
     s_reserve: float = 0.0
+    # Scales this battery's s_goal penalty (EOS_connect extension). None keeps the
+    # shared prc_e_goal_pen, i.e. tier-1 "strong avoid", which is right for a
+    # charging deadline that has to be met. A goal meant to be *weighed* rather
+    # than obeyed needs a far smaller weight.
+    #
+    # Note the penalty is charged per time step for as long as the goal stays
+    # unmet, so a shortfall lasting the whole horizon is penalised once per slot.
+    # The weight therefore has to be divided by roughly the number of slots, not
+    # just by the 100x that separates prc_e_goal_pen from the import price:
+    # measured on a 135-slot horizon, values from 1.0 down to 0.01 all produced
+    # the identical plan, and the optimiser only started trading the goal away
+    # below ~0.001.
+    s_goal_penalty_scale: Optional[float] = None
 
     def __post_init__(self):
         if self.s_capacity is None:
@@ -498,9 +511,12 @@ class Optimizer:
         for i, bat in enumerate(self.batteries):
             # unmet battery charging goals
             if self.batteries[i].s_goal is not None:
+                goal_pen = self.prc_e_goal_pen * (
+                    1.0 if bat.s_goal_penalty_scale is None else bat.s_goal_penalty_scale
+                )
                 for t in self.time_steps:
                     if self.batteries[i].s_goal[t] > 0:
-                        objective += -self.prc_e_goal_pen * self.variables['s_goal_pen'][i][t]
+                        objective += -goal_pen * self.variables['s_goal_pen'][i][t]
             # unmet charging demand
             if bat.p_demand is not None:
                 for t in self.time_steps:

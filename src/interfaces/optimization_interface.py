@@ -96,6 +96,9 @@ class OptimizationInterface:
                 battery_buffer_lead_hours=config.get(
                     "local_evopt_battery_buffer_lead_hours", 8
                 ),
+                battery_buffer_penalty_scale=config.get(
+                    "local_evopt_battery_buffer_penalty_scale", 1.0
+                ),
                 max_grid_import_w=_max_imp,
                 max_grid_export_w=_max_exp,
             )

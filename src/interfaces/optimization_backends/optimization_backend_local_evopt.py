@@ -67,6 +67,14 @@ class LocalEVOptBackend(EVOptBackend):
                                   end of the horizon, this applies a soft floor to every
                                   slot that melts away towards the next cheap window.
         battery_buffer_lead_hours: How far ahead of that window the buffer is at full size.
+        battery_buffer_penalty_scale: Scales the goal penalty for the buffer.
+                                  1.0 keeps the optimizer's own tier-1 weight, which makes
+                                  the buffer near-mandatory at almost any cost. Because the
+                                  penalty is charged per slot for as long as the goal is
+                                  unmet, the useful range is far lower than the 100x between
+                                  that weight and the import price suggests: measured here,
+                                  1.0 to 0.01 give the same plan and trading only starts
+                                  below ~0.001. Ignored while the buffer is off.
     """
 
     def __init__(
@@ -82,6 +90,7 @@ class LocalEVOptBackend(EVOptBackend):
         max_grid_export_w=None,
         battery_buffer_max_pct=0,
         battery_buffer_lead_hours=8.0,
+        battery_buffer_penalty_scale=1.0,
     ):
         # base_url is not used in-process; pass a placeholder so parent __init__ is happy
         super().__init__(
@@ -90,6 +99,7 @@ class LocalEVOptBackend(EVOptBackend):
             time_zone=time_zone,
             battery_buffer_max_pct=battery_buffer_max_pct,
             battery_buffer_lead_hours=battery_buffer_lead_hours,
+            battery_buffer_penalty_scale=battery_buffer_penalty_scale,
         )
         self.num_threads = num_threads
         self.time_limit = time_limit
@@ -280,6 +290,7 @@ class LocalEVOptBackend(EVOptBackend):
                 c_max=float(bat_data.get("c_max", 0)),
                 d_max=float(bat_data.get("d_max", 0)),
                 p_a=float(bat_data.get("p_a", 0)),
+                s_goal_penalty_scale=bat_data.get("s_goal_penalty_scale"),
                 c_priority=int(bat_data.get("c_priority", 0)),
                 s_reserve=s_reserve_wh,
             ))
