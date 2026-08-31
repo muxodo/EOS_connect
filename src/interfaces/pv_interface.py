@@ -695,8 +695,15 @@ class PvInterface:
             # Temperature forecast with minimal configuration (only needs lat/lon)
             # Works for all PV sources: Victron, Solcast, Akkudoktor, etc.
             if self.temperature_forecast_enabled:
-                temp_config = self.__get_temperature_config_entry()
-                if temp_config:
+                # A configured timeseries endpoint wins: it comes from the same
+                # source as the PV forecast, so it cannot go dark independently
+                # of it - the built-in weather API is a separate dependency that
+                # has failed on its own.
+                temp_result = self.__get_temperature_from_timeseries()
+                temp_config = None if temp_result else self.__get_temperature_config_entry()
+                if temp_result:
+                    self.temp_forecast_array = temp_result
+                elif temp_config:
                     temp_result = self.__get_pv_forecast_akkudoktor_api(
                         tgt_value="temperature", pv_config_entry=temp_config
                     )
@@ -988,6 +995,120 @@ class PvInterface:
         # Repeat for the next day (48 hours total)
         # logger.debug("[PV-IF] Using default PV forecast with %s W max power", pv_power)
         return forecast_24h * 2
+
+    def __get_temperature_from_timeseries(self):
+        """Outdoor temperature from the configured timeseries endpoint.
+
+        Optional: returns None when no ``temperature_url`` is configured or the
+        fetch fails, so the caller falls back to the built-in weather API. That
+        API is a dependency of its own and has gone down while the PV source was
+        perfectly healthy, leaving the load model with nothing.
+
+        Same canonical [{start, end, value}, ...] shape as the PV timeseries, with
+        values in degrees Celsius, aligned onto the same slot grid from local
+        midnight that the PV array uses.
+        """
+        temperature_url = (self.config_source.get("temperature_url", "") or "").strip()
+        if not temperature_url:
+            return None
+
+        data_path = (
+            self.config_source.get("data_path", "attributes.data").strip()
+            or "attributes.data"
+        )
+        data_token = (self.config_source.get("data_token", "") or "").strip()
+        headers = {"Content-Type": "application/json"}
+        if data_token:
+            headers["Authorization"] = f"Bearer {data_token}"
+
+        try:
+            response = requests.get(temperature_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            entries = extract_json_path(response.json(), data_path, label="PV-IF-TEMP")
+            if not isinstance(entries, list) or not entries:
+                raise ValueError("temperature payload is not a non-empty list")
+        except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+            logger.warning(
+                "[PV-IF] Temperature timeseries %s unavailable (%s) - "
+                "falling back to the weather API",
+                temperature_url,
+                exc,
+            )
+            return None
+
+        try:
+            tz = pytz.timezone(self.time_zone)
+        except (pytz.UnknownTimeZoneError, AttributeError):
+            tz = pytz.UTC
+
+        try:
+            entries = normalize_entries(entries, tz, label="PV-IF-TEMP")
+        except TimeseriesFormatError as exc:
+            logger.warning("[PV-IF] Invalid temperature timeseries: %s", exc)
+            return None
+
+        slot_seconds = 3600 if self.time_frame_base == 3600 else 900
+        lookup = {}
+        for entry in entries:
+            stamp = entry.get("start")
+            if not isinstance(stamp, datetime):
+                continue
+            value = float(entry.get("value", 0.0))
+            if value > 60 or value < -60:
+                # Not a temperature. Most likely the PV URL was pasted here.
+                logger.warning(
+                    "[PV-IF] Temperature timeseries contains %.1f - not a "
+                    "temperature; falling back to the weather API",
+                    value,
+                )
+                return None
+            aligned = (int(stamp.astimezone(tz).timestamp()) // slot_seconds) * slot_seconds
+            lookup[datetime.fromtimestamp(aligned, tz=pytz.UTC).astimezone(tz)] = value
+
+        if not lookup:
+            return None
+
+        now_local = datetime.now(tz)
+        midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        expected = 48 if self.time_frame_base == 3600 else 192
+        keys = [midnight + timedelta(seconds=slot_seconds * i) for i in range(expected)]
+
+        matched = sum(1 for k in keys if k in lookup)
+        if matched == 0:
+            logger.warning(
+                "[PV-IF] No temperature entry fell into the %d-slot window from %s "
+                "(source starts %s) - falling back to the weather API",
+                expected,
+                midnight,
+                min(lookup),
+            )
+            return None
+
+        # Carry the nearest known reading into gaps instead of zero-filling. The
+        # feed starts at "now", so every slot before it is missing, and a zero
+        # there would read as a hard frost - the heat pump model averages the whole
+        # day and would swing on it.
+        values = [lookup.get(k) for k in keys]
+        last = next(v for v in values if v is not None)
+        for i, v in enumerate(values):
+            if v is None:
+                values[i] = last
+            else:
+                last = v
+        first_known = next(i for i, k in enumerate(keys) if k in lookup)
+        backfill = lookup[keys[first_known]]
+        for i in range(first_known):
+            values[i] = backfill
+
+        logger.info(
+            "[PV-IF] Temperature from timeseries: %d of %d slots measured, "
+            "%.1f to %.1f degC",
+            matched,
+            expected,
+            min(values),
+            max(values),
+        )
+        return values
 
     def __get_default_temperature_forecast(self):
         """

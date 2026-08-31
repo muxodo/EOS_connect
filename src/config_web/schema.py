@@ -1401,6 +1401,29 @@ _ALL_FIELDS: list[FieldDef] = [
         display_group="Provider",
     ),
     FieldDef(
+        key="pv_forecast_source.temperature_url",
+        field_type="str",
+        default="",
+        section="pv_forecast_source",
+        level="expert",
+        description=(
+            "Optional endpoint serving an outdoor temperature forecast in the same "
+            "{start, end, value} format, with values in degrees Celsius. When set, "
+            "the temperature forecast is taken from here instead of the built-in "
+            "weather API - useful because that API is a separate dependency and can "
+            "fail while the PV source is healthy. Uses the same data_path and "
+            "data_token as the PV URL. Leave empty to keep the weather API."
+        ),
+        help_url="configuration.html#pv-forecast-sources",
+        depends_on={
+            "pv_forecast_source.source": ["timeseries"],
+            "pv_forecast_source.use_ha_central_data_source": [False],
+        },
+        validation={"pattern": r"^(https?://.+)?$"},
+        hot_reload=True,
+        display_group="Provider",
+    ),
+    FieldDef(
         key="pv_forecast_source.data_token",
         field_type="password",
         default="",
