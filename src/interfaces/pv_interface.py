@@ -51,6 +51,27 @@ logger.info("[PV-IF] loading module ")
 EOS_API_GET_PV_FORECAST = "https://api.akkudoktor.net/forecast"
 
 
+def trim_forecast_padding(series):
+    """Drop a trailing run of exact zeros from a temperature forecast.
+
+    The forecast array is padded to a fixed length, and the padding is exactly
+    0.0 while real readings carry a decimal. Kept, those zeros drag the daily
+    mean towards zero - harmless in summer, but on a frosty night they pull it
+    *up*, so the heat pump model would predict too little heating on exactly the
+    days it exists for. A genuine forecast can of course pass through 0 degC;
+    only a run reaching the very end of the array is treated as padding, and
+    losing one real hour from a 24 hour mean would not matter either way.
+
+    Returns None if nothing but padding is left.
+    """
+    if not series:
+        return None
+    end = len(series)
+    while end > 0 and series[end - 1] == 0.0:
+        end -= 1
+    return series[:end] or None
+
+
 class PvInterface:
     """
     Interface for fetching and summarizing PV (photovoltaic) and temperature forecasts.

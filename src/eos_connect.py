@@ -36,7 +36,7 @@ from interfaces.evcc_interface import EvccInterface
 from interfaces.price_interface import PriceInterface
 from interfaces.feed_in_price_interface import FeedInPriceInterface
 from interfaces.mqtt_interface import MqttInterface
-from interfaces.pv_interface import PvInterface
+from interfaces.pv_interface import PvInterface, trim_forecast_padding
 from interfaces.port_interface import PortInterface
 from interfaces.update_checker import UpdateChecker
 from interfaces.inverters import create_inverter
@@ -637,7 +637,9 @@ def create_optimize_request():
         # Hand over the temperature forecast before the profile is built: the heat
         # pump correction needs it and the load interface has no forecast source
         # of its own. None when disabled, which the correction treats as "skip".
-        load_interface.temperature_forecast = pv_interface.get_current_temp_forecast()
+        load_interface.temperature_forecast = trim_forecast_padding(
+            pv_interface.get_current_temp_forecast()
+        )
         gesamtlast = load_interface.get_load_profile(EOS_TGT_DURATION * slots_per_hour)
 
         eos_source_for_scale = config_manager.config.get("eos", {}).get("source", "eos_server")
@@ -1910,7 +1912,7 @@ def get_heatpump_info():
     # and drawing it would make a placeholder look like a measurement.
     temperature = None
     if pv_interface.temperature_forecast_enabled:
-        candidate = pv_interface.get_current_temp_forecast()
+        candidate = trim_forecast_padding(pv_interface.get_current_temp_forecast())
         if candidate and len(set(candidate)) > 1:
             temperature = candidate
     response_data = {
