@@ -252,6 +252,12 @@ class HotReloadAdapter:
             self._schedule_price_reload(key, force_source)
         elif key in _FEEDIN_PRICE_FIELD_MAP:
             self._apply_feed_in_price(key, new_value)
+            if key == "price.feed_in_price":
+                # The same field also prices the PV share of the stored energy.
+                # Without this it kept its startup value and only changed on the
+                # next restart - so a corrected tariff looked like it had taken
+                # effect while the battery price still used the old one.
+                self._apply_pv_opportunity_cost(new_value)
         elif key in _FEEDIN_DATA_FIELDS:
             # If feed-in source changed, pass the new source to avoid stale config
             force_source = new_value if key == "price.feed_in_source" else None
@@ -592,6 +598,31 @@ class HotReloadAdapter:
         logger.info(
             "[HotReload] Updated battery price.%s = %s (was %s)",
             attr,
+            coerced,
+            old_val,
+        )
+
+    def _apply_pv_opportunity_cost(self, new_value):
+        """Push a changed feed-in tariff into the battery price handler too.
+
+        The handler holds it in EUR/kWh while the config field is ct/kWh, so the
+        conversion happens here as it does at construction.
+        """
+        price_handler = getattr(self._battery, "price_handler", None)
+        if price_handler is None:
+            return
+        try:
+            coerced = float(new_value) / 100.0
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "[HotReload] Cannot coerce price.feed_in_price=%r: %s", new_value, exc
+            )
+            return
+        old_val = getattr(price_handler, "pv_cost_euro_per_kwh", "?")
+        price_handler.pv_cost_euro_per_kwh = coerced
+        price_handler.last_price_calculation = None
+        logger.info(
+            "[HotReload] Updated battery PV opportunity cost = %s EUR/kWh (was %s)",
             coerced,
             old_val,
         )

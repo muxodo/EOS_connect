@@ -4,7 +4,7 @@ Battery Price Calculation Handler
 This module provides dynamic battery energy price calculation functionality
 by analyzing historical charging events and attributing energy sources (PV vs Grid).
 Grid‑sourced energy is valued using historical price data.  PV‑sourced energy is
-assigned a cost derived from the configuration parameter `feed_in_price` (€/kWh),
+assigned a cost derived from the configuration parameter `feed_in_price` (ct/kWh),
 which is converted internally to €/Wh. The combined weighted average is returned
 as the current battery €/Wh price.
 """
@@ -99,7 +99,13 @@ class BatteryPriceHandler:
         self.battery_price_include_feedin = config.get(
             "battery_price_include_feedin", False
         )
-        self.pv_cost_euro_per_kwh = config.get("feed_in_price", 0.0)  # €/kWh
+        # price.feed_in_price is documented and read everywhere else as ct/kWh -
+        # see the schema and FeedInPriceInterface, which converts it with /100000
+        # to EUR/Wh. This module used to take the same field as EUR/kWh, so a
+        # correctly filled 8 ct/kWh was valued at 8 EUR/kWh: every stored PV kWh a
+        # hundredfold too expensive, which pins the optimiser into never
+        # discharging and buying everything from the grid instead.
+        self.pv_cost_euro_per_kwh = float(config.get("feed_in_price", 0.0)) / 100.0
 
         # State
         self.price_euro_per_wh = self.price_euro_per_wh_accu

@@ -594,8 +594,13 @@ class TestBatteryPriceIncludeFeedin:
         assert handler.battery_price_include_feedin is True
 
     def test_configured_feed_in_price_stored(self):
-        """feed_in_price value from config is stored as pv_cost_euro_per_kwh."""
-        cfg = {"battery_price_include_feedin": True, "feed_in_price": 0.0794}
+        """feed_in_price is ct/kWh in config and EUR/kWh on the handler.
+
+        The field is documented as ct/kWh in the schema and read that way by
+        FeedInPriceInterface. This module used to take it as EUR/kWh, so a
+        correctly filled tariff was valued a hundredfold too high.
+        """
+        cfg = {"battery_price_include_feedin": True, "feed_in_price": 7.94}
         handler = BatteryPriceHandler(cfg, None)
         assert handler.pv_cost_euro_per_kwh == pytest.approx(0.0794)
 
@@ -609,7 +614,7 @@ class TestBatteryPriceIncludeFeedin:
     # _calculate_total_costs: toggle-off means pv_cost = 0
     # ------------------------------------------------------------------
 
-    def _make_handler(self, include_feedin: bool, feed_in_price: float = 0.08):
+    def _make_handler(self, include_feedin: bool, feed_in_price: float = 8.0):
         """Build a BatteryPriceHandler with the feedin toggle set as requested."""
         config = {
             "charging_threshold_w": 50.0,
@@ -654,7 +659,7 @@ class TestBatteryPriceIncludeFeedin:
 
     def test_pv_cost_zero_when_toggle_off(self):
         """With toggle off, _calculate_total_costs returns zero cost for a pure-PV session."""
-        handler = self._make_handler(include_feedin=False, feed_in_price=0.08)
+        handler = self._make_handler(include_feedin=False, feed_in_price=8.0)
         events, historical = self._make_pv_charge_dataset()
 
         # Lookback 2 h so the event is within window
@@ -671,8 +676,9 @@ class TestBatteryPriceIncludeFeedin:
 
     def test_pv_cost_nonzero_when_toggle_on(self):
         """With toggle on, _calculate_total_costs applies feed_in_price to PV energy."""
-        feed_in = 0.08  # €/kWh
-        handler = self._make_handler(include_feedin=True, feed_in_price=feed_in)
+        feed_in_ct = 8.0  # ct/kWh, the unit the config field carries
+        feed_in = feed_in_ct / 100.0  # EUR/kWh, the unit the weighted price is in
+        handler = self._make_handler(include_feedin=True, feed_in_price=feed_in_ct)
         events, historical = self._make_pv_charge_dataset()
 
         result = handler._calculate_total_costs(
@@ -683,7 +689,7 @@ class TestBatteryPriceIncludeFeedin:
 
         assert result is not None
         assert result["total_energy_charged"] > 0, "Energy should have been recorded"
-        # ~1 kWh charged from PV at €0.08/kWh → weighted price ≈ 0.08 €/kWh
+        # ~1 kWh charged from PV at 8 ct/kWh -> weighted price ~ 0.08 EUR/kWh
         weighted_price_euro_per_kwh = (
             result["total_cost"] / result["total_energy_charged"] * 1000.0
         )
