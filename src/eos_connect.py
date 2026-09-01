@@ -533,6 +533,7 @@ update_checker = UpdateChecker(
     current_version=__version__,
     check_interval=43200,
     on_status_change=on_update_status_change,
+    enabled=bool(config_manager.config.get("update_check_enabled", True)),
 )
 
 # Publish initial update status to MQTT

@@ -1998,6 +1998,22 @@ _ALL_FIELDS: list[FieldDef] = [
         display_group="General",
     ),
     FieldDef(
+        key="update_check_enabled",
+        field_type="bool",
+        default=True,
+        section="system",
+        level="standard",
+        description=(
+            "Check the container registry for newer releases and show a banner when "
+            "one is found. Turn off if this instance runs a modified image: the "
+            "version reported is the upstream one, so the banner would announce an "
+            "update that replaces the local changes."
+        ),
+        help_url="configuration.html#system",
+        labels=["restart_required"],
+        display_group="General",
+    ),
+    FieldDef(
         key="log_level",
         field_type="select",
         default="info",

@@ -32,7 +32,13 @@ class UpdateChecker:
     - Latest available version matching the branch
     """
 
-    def __init__(self, current_version, check_interval=43200, on_status_change=None):
+    def __init__(
+        self,
+        current_version,
+        check_interval=43200,
+        on_status_change=None,
+        enabled=True,
+    ):
         """
         Initialize the UpdateChecker.
 
@@ -41,7 +47,11 @@ class UpdateChecker:
             check_interval: Seconds between checks (default: 43200 = 12 hours)
             on_status_change: Optional callback function called when status changes
                              Receives update_status dict as parameter
+            enabled: When False, no check runs and no banner is shown. Meant for
+                     instances running a modified image, where the reported version
+                     is upstream's and an "update" would overwrite the changes.
         """
+        self.enabled = enabled
         self.current_version = current_version
         self.check_interval = check_interval
         self.on_status_change = on_status_change
@@ -79,7 +89,9 @@ class UpdateChecker:
         self._stop_event = threading.Event()
 
         # Start the service if applicable
-        if self.is_ha_addon:
+        if not self.enabled:
+            logger.info("[UPDATE-CHECK] Disabled by configuration")
+        elif self.is_ha_addon:
             logger.info(
                 "[UPDATE-CHECK] Running as Home Assistant Add-on - "
                 "update checking disabled (HA manages updates)"
@@ -102,7 +114,11 @@ class UpdateChecker:
             dict: Update status information
         """
         return {
-            "enabled": not self.is_ha_addon and self.current_version_parsed is not None,
+            "enabled": (
+                self.enabled
+                and not self.is_ha_addon
+                and self.current_version_parsed is not None
+            ),
             "is_ha_addon": self.is_ha_addon,
             "current_version": self.current_version,
             "is_develop_branch": self.is_develop,
