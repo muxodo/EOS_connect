@@ -12,22 +12,30 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from interfaces.heatpump_model import (  # noqa: E402
     apply_correction,
     fit_heating_regression,
+    heating_degrees,
     predict_daily_w,
 )
 
 SLOTS = 96  # one day at 15-minute resolution
 
 
+def flat_day(temp):
+    """A day held at one temperature, as a slot curve."""
+    return [float(temp)] * SLOTS
+
+
 def synth_samples(per_degree=46.0, base_t=15.0, intercept=0.0):
-    """Daily (temperature, heat pump power) pairs from a known relationship, so
-    the fit can be checked against the truth that produced them.
+    """Daily (temperature curve, heat pump power) pairs from a known relationship,
+    so the fit can be checked against the truth that produced them.
 
     ``per_degree`` is watts per *heating degree*, i.e. positive: the colder it
-    gets below base_t, the more the heat pump draws.
+    gets below base_t, the more the heat pump draws. Flat days, so the integrated
+    heating degrees equal the ones from the daily mean and the expected slope
+    stays easy to state.
     """
     out = []
     for temp in (-5, -2, 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22):
-        out.append((float(temp), intercept + per_degree * max(0.0, base_t - temp)))
+        out.append((flat_day(temp), intercept + per_degree * max(0.0, base_t - temp)))
     return out
 
 
@@ -44,7 +52,9 @@ def main() -> int:
 
     # 2. Colder must predict more, and above the heating limit it must be zero.
     if fit:
-        cold, mild, warm = predict_daily_w(fit, -5), predict_daily_w(fit, 8), predict_daily_w(fit, 25)
+        cold = predict_daily_w(fit, flat_day(-5))
+        mild = predict_daily_w(fit, flat_day(8))
+        warm = predict_daily_w(fit, flat_day(25))
         ok = cold > mild > 0 and warm == 0.0
         print(f"2. Vorhersage monoton, ueber Heizgrenze null: {'OK' if ok else 'FEHLER'}  "
               f"(-5C {cold:.0f} W, 8C {mild:.0f} W, 25C {warm:.0f} W)")
@@ -53,14 +63,14 @@ def main() -> int:
 
     # 3. Refuse a fit that says the heat pump runs harder when it is warm - that
     # is not heating, and trusting it would push the forecast the wrong way.
-    inverted = [(t, 10.0 * t) for t in range(0, 20)]
+    inverted = [(flat_day(t), 10.0 * t) for t in range(0, 20)]
     ok = fit_heating_regression(inverted) is None
     print(f"3. Verwirft positiven Zusammenhang: {'OK' if ok else 'FEHLER'}")
     if not ok:
         fails.append("sign guard")
 
     # 4. Too little data must yield no fit rather than a fragile one.
-    ok = fit_heating_regression([(5.0, 500.0), (6.0, 450.0)]) is None
+    ok = fit_heating_regression([(flat_day(5), 500.0), (flat_day(6), 450.0)]) is None
     print(f"4. Zu wenige Tage -> kein Fit: {'OK' if ok else 'FEHLER'}")
     if not ok:
         fails.append("min samples")
@@ -115,13 +125,34 @@ def main() -> int:
     # 10. A summer window (no heating at all) must produce no fit. Fitted on such
     # data the slope is noise, and the prediction extrapolates it to winter
     # temperatures the window never saw. Real August data did exactly this.
-    summer = [(20.1, 65.0), (20.2, 98.3), (23.4, 99.6), (20.0, 52.4), (18.8, 83.8),
-              (17.2, 75.1), (16.3, 66.1), (17.7, 21.8), (17.7, 146.5), (19.2, 53.1),
-              (18.3, 32.2), (17.6, 56.2), (17.4, 94.8), (21.1, 59.0)]
+    summer = [(flat_day(t), w) for t, w in
+              [(20.1, 65.0), (20.2, 98.3), (23.4, 99.6), (20.0, 52.4), (18.8, 83.8),
+               (17.2, 75.1), (16.3, 66.1), (17.7, 21.8), (17.7, 146.5), (19.2, 53.1),
+               (18.3, 32.2), (17.6, 56.2), (17.4, 94.8), (21.1, 59.0)]]
     ok = fit_heating_regression(summer) is None
     print(f"10. Sommerfenster ohne Heizbetrieb -> kein Fit: {'OK' if ok else 'FEHLER'}")
     if not ok:
         fails.append("summer window")
+
+    # 11. The point of integrating: a day that crosses the heating limit must
+    # count more degrees than its daily mean suggests, because the warm hours are
+    # cut off at zero instead of cancelling the cold ones.
+    swinging = [4.0] * (SLOTS // 2) + [14.0] * (SLOTS // 2)   # mean 9 degC
+    integrated = heating_degrees(swinging, 12.0)
+    from_mean = max(0.0, 12.0 - sum(swinging) / len(swinging))
+    ok = abs(integrated - 4.0) < 1e-9 and abs(from_mean - 3.0) < 1e-9
+    print(f"11. Knick wird integriert, nicht weggemittelt: {'OK' if ok else 'FEHLER'} "
+          f"({integrated:.1f} statt {from_mean:.1f} Heizgrade)")
+    if not ok:
+        fails.append("integration")
+
+    # 12. A day fully below the limit must be unaffected by integrating, so the
+    # change cannot quietly shift the deep-winter case it was not aimed at.
+    cold_day = [-2.0] * (SLOTS // 2) + [2.0] * (SLOTS // 2)
+    ok = abs(heating_degrees(cold_day, 12.0) - 12.0) < 1e-9
+    print(f"12. Tag ganz unter der Heizgrenze unveraendert: {'OK' if ok else 'FEHLER'}")
+    if not ok:
+        fails.append("cold day")
 
     print()
     print("ERGEBNIS:", "alle Pruefungen bestanden" if not fails else f"FEHLGESCHLAGEN: {fails}")

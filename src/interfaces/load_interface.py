@@ -770,28 +770,24 @@ class LoadInterface:
             return stamp.replace(tzinfo=reference.tzinfo)
         return stamp
 
-    def _heatpump_profile_for_day(self, start_time, end_time):
-        """Per-slot heat pump energy for one day, in the same shape and unit as
-        get_load_profile_for_day() (Wh per slot). One range request, integrated
-        locally.
+    def _slot_means_for_day(self, entity_id, start_time, end_time):
+        """Per-slot time-weighted mean of an entity over one day, in its own unit.
 
         Integrated over time rather than averaged over samples, for the same
         reason as _daily_mean_from_range: Home Assistant records on change, so
-        sample density follows how hard the appliance is working. The reference
-        and the prediction have to be measured the same way, or the scale between
-        them is meaningless.
+        sample density follows how hard the appliance is working.
+
+        Returns [] when nothing usable came back.
         """
         num_slots = int((end_time - start_time).total_seconds() // self.time_frame_base)
-        if num_slots <= 0 or not self.heatpump_sensor:
+        if num_slots <= 0 or not entity_id:
             return []
 
-        data = self.fetch_historical_energy_data(
-            self.heatpump_sensor, start_time, end_time
-        )
+        data = self.fetch_historical_energy_data(entity_id, start_time, end_time)
         samples = []
         for entry in data or []:
             try:
-                value = abs(float(entry["state"]))
+                value = float(entry["state"])
                 stamp = self._align_timestamp(
                     datetime.fromisoformat(entry["last_updated"].replace("Z", "+00:00")),
                     start_time,
@@ -804,11 +800,11 @@ class LoadInterface:
             return []
         samples.sort(key=lambda item: item[0])
 
-        profile = []
+        means = []
         index = 0
         # A state holds until the next one is reported, so a slot with no change
         # inherits the value that was already in force - reading it as zero would
-        # fake heat pump downtime.
+        # fake heat pump downtime, or invent a frost.
         current = samples[0][1]
         for slot in range(num_slots):
             slot_start = start_time + timedelta(seconds=slot * self.time_frame_base)
@@ -816,17 +812,28 @@ class LoadInterface:
             while index < len(samples) and samples[index][0] <= slot_start:
                 current = samples[index][1]
                 index += 1
-            watt_seconds = 0.0
+            weighted = 0.0
             cursor = slot_start
             while index < len(samples) and samples[index][0] < slot_end:
                 stamp, value = samples[index]
-                watt_seconds += current * (stamp - cursor).total_seconds()
+                weighted += current * (stamp - cursor).total_seconds()
                 cursor = stamp
                 current = value
                 index += 1
-            watt_seconds += current * (slot_end - cursor).total_seconds()
-            profile.append(round(watt_seconds / 3600.0, 3))
-        return profile
+            weighted += current * (slot_end - cursor).total_seconds()
+            means.append(weighted / self.time_frame_base)
+        return means
+
+    def _heatpump_profile_for_day(self, start_time, end_time):
+        """Per-slot heat pump energy for one day, in the same shape and unit as
+        get_load_profile_for_day() (Wh per slot)."""
+        interval_hours = self.time_frame_base / 3600.0
+        return [
+            round(abs(mean) * interval_hours, 3)
+            for mean in self._slot_means_for_day(
+                self.heatpump_sensor, start_time, end_time
+            )
+        ]
 
     def _fit_heatpump_model(self, now):
         """Regression of daily heat pump power against daily outdoor temperature,
@@ -839,11 +846,14 @@ class LoadInterface:
             day_start = midnight - timedelta(days=days_back)
             day_end = day_start + timedelta(days=1)
             hp = self._daily_mean_from_range(self.heatpump_sensor, day_start, day_end)
-            temp = self._daily_mean_from_range(
+            # The whole day's temperature curve, not its mean: heating degrees are
+            # integrated per slot, and the forecast side does the same, so both
+            # ends of the model measure the same quantity.
+            temps = self._slot_means_for_day(
                 self.outdoor_temperature_sensor, day_start, day_end
             )
-            if hp is not None and temp is not None:
-                samples.append((temp, abs(hp)))
+            if hp is not None and temps:
+                samples.append((temps, abs(hp)))
         fit = fit_heating_regression(samples)
         if fit is None:
             logger.info(
@@ -854,7 +864,8 @@ class LoadInterface:
         else:
             intercept, slope, base_t = fit
             logger.info(
-                "[LOAD-IF] Heat pump model: %.0f W %+.1f W/K below %.0f degC (%d days)",
+                "[LOAD-IF] Heat pump model: %.0f W %+.1f W per heating degree "
+                "below %.0f degC (%d days)",
                 intercept,
                 slope,
                 base_t,
@@ -931,16 +942,19 @@ class LoadInterface:
             )
             return load_profile
 
-        # One predicted daily average per day the profile covers.
+        # One predicted daily average per day the profile covers. The whole window
+        # goes in: predict_daily_w integrates the heating degrees across it, the
+        # same way the fit was trained.
         predicted = []
         for day_index in range(len(load_profile) // slots_per_day):
-            window = self.temperature_forecast[
-                day_index * slots_per_day : (day_index + 1) * slots_per_day
+            window = [
+                t
+                for t in self.temperature_forecast[
+                    day_index * slots_per_day : (day_index + 1) * slots_per_day
+                ]
+                if t is not None
             ]
-            window = [t for t in window if t is not None]
-            predicted.append(
-                predict_daily_w(fit, sum(window) / len(window)) if window else None
-            )
+            predicted.append(predict_daily_w(fit, window) if window else None)
 
         corrected = apply_correction(
             load_profile,
