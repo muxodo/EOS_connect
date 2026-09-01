@@ -532,19 +532,25 @@ class EVOptBackend:
         # EVCC might wrap actual payload under "response"
         resp = evcc_resp.get("response", evcc_resp)
 
-        # Calculate time-based parameters
-        time_params = self._calculate_time_parameters()
+        # Calculate time-based parameters. The optimizer's own arrays say how far
+        # it planned, which is further than midnight tomorrow whenever the horizon
+        # was extended.
+        planned = 0
+        for battery in resp.get("batteries") or []:
+            planned = max(planned, len(battery.get("state_of_charge") or []))
+        planned = max(planned, len(resp.get("grid_import") or []))
+        time_params = self._calculate_time_parameters(planned_slots=planned)
 
         # Extract battery parameters from request
         battery_params = self._extract_battery_parameters(evopt, eos_request)
 
         # Extract response data arrays
         response_arrays = self._extract_response_arrays(
-            resp, time_params["n_control"], time_params["n_result"]
+            resp, time_params["n_control"], time_params["n_display"]
         )
 
         # Extract pricing data
-        pricing_data = self._extract_pricing_data(evopt, time_params["n_result"])
+        pricing_data = self._extract_pricing_data(evopt, time_params["n_display"])
 
         # Process control arrays (ac_charge, dc_charge, discharge_allowed)
         control_arrays = self._process_control_arrays(
@@ -559,7 +565,7 @@ class EVOptBackend:
             pricing_data,
             battery_params,
             evopt,
-            time_params["n_result"],
+            time_params["n_display"],
         )
 
         # Build EOS response
@@ -571,14 +577,18 @@ class EVOptBackend:
             evcc_resp,
         )
 
-    def _calculate_time_parameters(self):
+    def _calculate_time_parameters(self, planned_slots=None):
         """
         Calculate time-based parameters for array sizing and padding.
 
         Returns:
             dict with keys:
             - n_control: Total slots for control arrays (192 for 15-min, 48 for hourly)
-            - n_result: Slots for result arrays (from now to midnight tomorrow)
+            - n_result: Slots for control arrays (from now to midnight tomorrow)
+            - n_display: Slots for result arrays. The local optimizer extends its
+              own horizon past midnight tomorrow, and truncating there hid the
+              tail of the plan. Control arrays keep the shorter length: they are
+              indexed by slot-since-midnight and consumers rely on that.
             - current_slot: Current time slot index
             - pad_past: Padding array for past slots
         """
@@ -604,9 +614,14 @@ class EVOptBackend:
             hours_today = 24 - current_hour
             n_result = hours_today + 24  # +24 for tomorrow
 
+        # Never shorter than the two-day grid, and never longer than what the
+        # optimizer actually planned.
+        n_display = max(n_result, int(planned_slots or 0))
+
         return {
             "n_control": n_control,
             "n_result": n_result,
+            "n_display": n_display,
             "current_slot": current_slot,
             "current_hour": current_hour,
             "pad_past": pad_past,

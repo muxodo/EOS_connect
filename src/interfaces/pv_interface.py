@@ -72,6 +72,11 @@ def trim_forecast_padding(series):
     return series[:end] or None
 
 
+# How far past the two-day grid to keep a forecast, for the optimizer's own
+# horizon extension. Six hours matches what it would otherwise synthesise.
+PV_EXTENSION_SLOTS = 24
+
+
 class PvInterface:
     """
     Interface for fetching and summarizing PV (photovoltaic) and temperature forecasts.
@@ -112,6 +117,9 @@ class PvInterface:
             "source": None,
         }
         self.temp_forecast_array = self.__get_default_temperature_forecast()
+        # Slots past the two-day grid, when the source provides them (see
+        # PV_EXTENSION_SLOTS). Empty when it does not.
+        self.pv_forecast_extension = []
 
         # Cache mechanism for fallback on API failures (similar to PriceInterface)
         # When Akkudoktor is unavailable, reuse last successful forecast
@@ -759,6 +767,11 @@ class PvInterface:
         if scale:
             return list(self.pv_forcast_array)
         return list(self.pv_forcast_array_raw)
+
+    def get_pv_forecast_extension(self):
+        """PV forecast for the slots just past the two-day grid, or [] if the
+        configured source does not reach that far."""
+        return list(self.pv_forecast_extension)
 
     def get_current_temp_forecast(self):
         """
@@ -1573,6 +1586,20 @@ class PvInterface:
             for i in range(expected_count)
         ]
         values = [round(lookup.get(key, 0.0), 1) for key in slot_keys]
+
+        # Keep whatever the source offers beyond the two-day grid. The array
+        # itself must stay 192 slots because everything downstream indexes it by
+        # "slots since midnight", but the local optimizer plans past its end and
+        # would otherwise invent that stretch from a fixed ramp. A real forecast
+        # is available here for free - it was fetched in the same response and
+        # only discarded by the alignment.
+        extension = [
+            round(lookup.get(midnight_today + timedelta(seconds=slot_seconds * i), 0.0), 1)
+            for i in range(expected_count, expected_count + PV_EXTENSION_SLOTS)
+        ]
+        # All zeros means the source simply does not reach that far; saying so is
+        # different from forecasting darkness.
+        self.pv_forecast_extension = extension if any(v > 0 for v in extension) else []
 
         matched = sum(1 for key in slot_keys if key in lookup)
         if matched == 0 and lookup:

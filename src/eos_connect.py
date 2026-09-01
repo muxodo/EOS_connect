@@ -284,6 +284,13 @@ pv_interface = interface_factory.create_pv_interface(
     config_manager.config.get("time_zone", "UTC"),
 )
 
+# The local optimizer plans a few hours past the two-day grid and would otherwise
+# invent that stretch from a fixed ramp. The PV source usually covers it already.
+try:
+    eos_interface.set_pv_forecast_extension(pv_interface.get_pv_forecast_extension)
+except AttributeError:
+    logger.debug("[Main] Backend takes no PV forecast extension")
+
 # Initialize PV autoscaler and attach to PvInterface (best-effort)
 pv_autoscaler = None
 try:

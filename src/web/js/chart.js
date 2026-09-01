@@ -69,16 +69,18 @@ class ChartManager {
         // Use gesamtlast from request as pure household load.
         // EOS server includes AC charging energy in Last_Wh_pro_Stunde; using gesamtlast
         // gives consistent display across both EOS and EVopt backends.
+        // No wrap-around. The request only reaches midnight after tomorrow, while
+        // the optimizer plans past it, so filling the tail from the start of today
+        // would draw last night's load as if it were the day after tomorrow. The
+        // series simply ends where its data does.
         let gesamtlastSliced;
         if (time_frame_base === 900) {
             gesamtlastSliced = data_request["ems"]["gesamtlast"]
                 .slice(currentSlot)
-                .concat(data_request["ems"]["gesamtlast"].slice(0, currentSlot))
                 .slice(0, data_response["result"]["Last_Wh_pro_Stunde"].length);
         } else {
             gesamtlastSliced = data_request["ems"]["gesamtlast"]
                 .slice(currentHour)
-                .concat(data_request["ems"]["gesamtlast"].slice(24, 48))
                 .slice(0, data_response["result"]["Last_Wh_pro_Stunde"].length);
         }
         // Calculate consumption (excluding home appliances)

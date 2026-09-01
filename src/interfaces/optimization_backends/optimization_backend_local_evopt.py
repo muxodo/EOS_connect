@@ -67,6 +67,10 @@ class LocalEVOptBackend(EVOptBackend):
                                   end of the horizon, this applies a soft floor to every
                                   slot that melts away towards the next cheap window.
         battery_buffer_lead_hours: How far ahead of that window the buffer is at full size.
+        pv_forecast_extension:    Callable returning the PV forecast for the slots
+                                  just past the two-day grid. When it reaches far
+                                  enough the horizon extension uses it instead of
+                                  a synthetic ramp.
         battery_buffer_penalty_scale: Scales the goal penalty for the buffer.
                                   1.0 keeps the optimizer's own tier-1 weight, which makes
                                   the buffer near-mandatory at almost any cost. Because the
@@ -91,6 +95,7 @@ class LocalEVOptBackend(EVOptBackend):
         battery_buffer_max_pct=0,
         battery_buffer_lead_hours=8.0,
         battery_buffer_penalty_scale=1.0,
+        pv_forecast_extension=None,
     ):
         # base_url is not used in-process; pass a placeholder so parent __init__ is happy
         super().__init__(
@@ -103,6 +108,10 @@ class LocalEVOptBackend(EVOptBackend):
         )
         self.num_threads = num_threads
         self.time_limit = time_limit
+        # Callable returning PV for the slots just past the two-day grid, or None.
+        # A callable rather than a value because the forecast is refreshed
+        # independently of this backend.
+        self.pv_forecast_extension = pv_forecast_extension
         if charging_strategy in CHARGING_STRATEGIES:
             self.charging_strategy = charging_strategy
         else:
@@ -458,13 +467,35 @@ class LocalEVOptBackend(EVOptBackend):
             )
             return evopt_request
 
-        # Generate synthetic morning PV pattern
+        # Prefer the real forecast for these slots. The PV source often already
+        # covers them - they were fetched in the same response and only dropped
+        # because the array is indexed from midnight and stops after two days.
+        # The synthetic ramp is a fixed 10-50 percent of peak, so on an overcast
+        # morning it promises sun that will not arrive, and the optimizer empties
+        # the battery overnight expecting it.
         extension_hours = 6  # Extend 6 hours into morning (06:00-12:00)
-        morning_slots = self._generate_morning_pv_pattern(
-            pv_capacity=pv_capacity_w,
-            time_frame_base=self.time_frame_base,
-            hours=extension_hours
-        )
+        real_slots = list(self.pv_forecast_extension() or []) if self.pv_forecast_extension else []
+        wanted = extension_hours * (3600 // self.time_frame_base)
+        if len(real_slots) >= wanted:
+            morning_slots = real_slots[:wanted]
+            logger.info(
+                "[OPT-LocalEVopt] Horizon extension from the real forecast "
+                "(%d slots, %.0f Wh total)",
+                len(morning_slots),
+                sum(morning_slots),
+            )
+        else:
+            morning_slots = self._generate_morning_pv_pattern(
+                pv_capacity=pv_capacity_w,
+                time_frame_base=self.time_frame_base,
+                hours=extension_hours
+            )
+            logger.info(
+                "[OPT-LocalEVopt] Horizon extension synthesised - the PV source "
+                "does not reach past the two-day grid (%d of %d slots available)",
+                len(real_slots),
+                wanted,
+            )
 
         n_slots_added = len(morning_slots)
         original_slot_count = len(ts["ft"])
@@ -490,10 +521,9 @@ class LocalEVOptBackend(EVOptBackend):
                 bat["s_goal"].extend([0.0] * n_slots_added)
 
         logger.info(
-            "[OPT-LocalEVopt] Smart forecast extension: Added %d synthetic morning "
-            "slots (06:00-12:00 pattern) to teach optimizer about cyclical "
-            "day/night. Forecast extended from %d to %d slots. PV capacity: %.0f W",
-            n_slots_added, original_slot_count, len(ts["ft"]), pv_capacity_w
+            "[OPT-LocalEVopt] Horizon extended from %d to %d slots so the optimizer "
+            "knows day follows night. PV capacity: %.0f W",
+            original_slot_count, len(ts["ft"]), pv_capacity_w
         )
 
         return evopt_request

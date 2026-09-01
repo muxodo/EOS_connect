@@ -158,6 +158,16 @@ class OptimizationInterface:
             },
         ]
 
+
+    def set_pv_forecast_extension(self, provider):
+        """Hand the backend a source of PV beyond the two-day grid.
+
+        Set after construction because the PV interface is built later. Backends
+        that do not plan past the grid ignore it.
+        """
+        if hasattr(self.backend, "pv_forecast_extension"):
+            self.backend.pv_forecast_extension = provider
+
     def optimize(self, eos_request, timeout=None):
         """
         Main entry point for optimization.
