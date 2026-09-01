@@ -96,6 +96,7 @@ class LocalEVOptBackend(EVOptBackend):
         battery_buffer_lead_hours=8.0,
         battery_buffer_penalty_scale=1.0,
         pv_forecast_extension=None,
+        price_extension=None,
     ):
         # base_url is not used in-process; pass a placeholder so parent __init__ is happy
         super().__init__(
@@ -112,6 +113,10 @@ class LocalEVOptBackend(EVOptBackend):
         # A callable rather than a value because the forecast is refreshed
         # independently of this backend.
         self.pv_forecast_extension = pv_forecast_extension
+        # Same idea for prices: without it the extension carries the last value
+        # flat, which tells the optimizer nothing about the morning it is
+        # planning towards.
+        self.price_extension = price_extension
         if charging_strategy in CHARGING_STRATEGIES:
             self.charging_strategy = charging_strategy
         else:
@@ -507,13 +512,34 @@ class LocalEVOptBackend(EVOptBackend):
         # Extend all time_series arrays consistently
         ts["ft"].extend(morning_slots)
 
-        # For load, prices: repeat last value (conservative assumption)
+        # Load and export price: repeat the last value. The night load is flat
+        # enough for that to be a fair approximation, and the export tariff is
+        # fixed here anyway.
         last_load = ts["gt"][-1] if ts.get("gt") else 0.0
         last_price_import = ts["p_N"][-1] if ts.get("p_N") else 0.0
         last_price_export = ts["p_E"][-1] if ts.get("p_E") else 0.0
 
+        real_prices = list(self.price_extension() or []) if self.price_extension else []
+        if len(real_prices) >= n_slots_added:
+            import_prices = real_prices[:n_slots_added]
+            logger.info(
+                "[OPT-LocalEVopt] Extension prices from the forecast "
+                "(%.1f to %.1f ct/kWh)",
+                min(import_prices) * 100000,
+                max(import_prices) * 100000,
+            )
+        else:
+            import_prices = [last_price_import] * n_slots_added
+            logger.info(
+                "[OPT-LocalEVopt] Extension prices carried forward at %.1f ct/kWh "
+                "- the forecast does not reach past the two-day grid (%d of %d)",
+                last_price_import * 100000,
+                len(real_prices),
+                n_slots_added,
+            )
+
         ts["gt"].extend([last_load] * n_slots_added)
-        ts["p_N"].extend([last_price_import] * n_slots_added)
+        ts["p_N"].extend(import_prices)
         ts["p_E"].extend([last_price_export] * n_slots_added)
         ts["dt"].extend([self.time_frame_base] * n_slots_added)
 

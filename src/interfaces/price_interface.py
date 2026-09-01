@@ -58,6 +58,11 @@ SMARTENERGY_API = "https://apis.smartenergy.at/market/v1/price"
 STROMLIGNING_API_BASE = "https://stromligning.dk/api/prices?lean=true"
 ENERGYFORECAST_API = "https://www.energyforecast.de/api/v1/predictions/next_48_hours"
 
+# How far past the two-day grid to keep prices, for the optimizer's horizon
+# extension. Matches PV_EXTENSION_SLOTS in pv_interface: twelve hours, because
+# the grid ends at local midnight and the extension has to reach into the morning.
+PRICE_EXTENSION_SLOTS = 48
+
 # Energyforecast smart price prediction constants
 ENERGYFORECAST_MIN_OVERLAP_HOURS = 6  # Minimum overlapping hours needed for learning
 ENERGYFORECAST_MAX_FACTOR = 5.0  # Maximum allowed multiplicative factor
@@ -167,6 +172,9 @@ class PriceInterface:
         self.price_currency = self.__determine_price_currency()
 
         # Add retry mechanism attributes
+        # Prices for the slots past the two-day grid, when the forecast reaches
+        # that far. Empty otherwise.
+        self.price_extension = []
         self.last_successful_prices = []
         self.last_successful_prices_direct = []
         self.consecutive_failures = 0
@@ -385,6 +393,10 @@ class PriceInterface:
             tgt_duration,
             start_time.strftime("%Y-%m-%d %H:%M"),
         )
+
+    def get_price_extension(self):
+        """Prices for the slots just past the two-day grid, or [] if unavailable."""
+        return list(self.price_extension)
 
     def get_current_prices(self):
         """
@@ -927,6 +939,25 @@ class PriceInterface:
                 )
                 extended_prices.extend([pad_value] * remaining_slots)
                 extended_prices_direct.extend([pad_value_direct] * remaining_slots)
+
+        # Ask the gap filler for more than the grid holds and keep the surplus
+        # aside. The optimizer plans past midnight after tomorrow and would
+        # otherwise carry the last price flat across those hours - a signal that
+        # always says "average" exactly where the plan decides whether to arrive
+        # empty or full.
+        self.price_extension = []
+        if len(extended_prices) >= actual_slots:
+            surplus = self._fetch_adaptive_energyforecast_fallback(
+                known_prices_with_ts=prices_with_timestamps,
+                num_missing_hours=(actual_slots - len(extended_prices))
+                + PRICE_EXTENSION_SLOTS,
+            )
+            if surplus and len(surplus) >= PRICE_EXTENSION_SLOTS:
+                self.price_extension = list(surplus[-PRICE_EXTENSION_SLOTS:])
+                logger.debug(
+                    "[PRICE-IF] Kept %d price slots past the two-day grid",
+                    len(self.price_extension),
+                )
 
         self.current_prices_direct = extended_prices_direct.copy()
         logger.debug("[PRICE-IF] Prices from TIBBER fetched successfully.")

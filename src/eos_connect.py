@@ -288,8 +288,9 @@ pv_interface = interface_factory.create_pv_interface(
 # invent that stretch from a fixed ramp. The PV source usually covers it already.
 try:
     eos_interface.set_pv_forecast_extension(pv_interface.get_pv_forecast_extension)
+    eos_interface.set_price_extension(price_interface.get_price_extension)
 except AttributeError:
-    logger.debug("[Main] Backend takes no PV forecast extension")
+    logger.debug("[Main] Backend takes no forecast extension")
 
 # Initialize PV autoscaler and attach to PvInterface (best-effort)
 pv_autoscaler = None

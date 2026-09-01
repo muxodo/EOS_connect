@@ -159,6 +159,11 @@ class OptimizationInterface:
         ]
 
 
+    def set_price_extension(self, provider):
+        """Hand the backend a source of prices beyond the two-day grid."""
+        if hasattr(self.backend, "price_extension"):
+            self.backend.price_extension = provider
+
     def set_pv_forecast_extension(self, provider):
         """Hand the backend a source of PV beyond the two-day grid.
 
