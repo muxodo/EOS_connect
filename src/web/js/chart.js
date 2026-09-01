@@ -75,14 +75,18 @@ class ChartManager {
         // series simply ends where its data does.
         let gesamtlastSliced;
         if (time_frame_base === 900) {
-            gesamtlastSliced = data_request["ems"]["gesamtlast"]
-                .slice(currentSlot)
-                .slice(0, data_response["result"]["Last_Wh_pro_Stunde"].length);
+            gesamtlastSliced = data_request["ems"]["gesamtlast"].slice(currentSlot);
         } else {
-            gesamtlastSliced = data_request["ems"]["gesamtlast"]
-                .slice(currentHour)
-                .slice(0, data_response["result"]["Last_Wh_pro_Stunde"].length);
+            gesamtlastSliced = data_request["ems"]["gesamtlast"].slice(currentHour);
         }
+        // The request only covers the two-day grid. Past its end the optimizer
+        // planned on its own extended series, so the curve continues from there
+        // instead of stopping mid-plan.
+        const planned = data_response["result"]["Last_Wh_pro_Stunde"] || [];
+        if (planned.length > gesamtlastSliced.length) {
+            gesamtlastSliced = gesamtlastSliced.concat(planned.slice(gesamtlastSliced.length));
+        }
+        gesamtlastSliced = gesamtlastSliced.slice(0, planned.length);
         // Calculate consumption (excluding home appliances)
         this.chartInstance.data.datasets[0].data = gesamtlastSliced.map((value, index) => {
             const actHomeApplianceValue = data_response["result"]["Home_appliance_wh_per_hour"][index] || 0;
@@ -93,21 +97,19 @@ class ChartManager {
         this.chartInstance.data.datasets[1].data = data_response["result"]["Home_appliance_wh_per_hour"].map(value => (value / 1000).toFixed(3));
 
         // PV forecast
-        let pvData;
-        if (time_frame_base === 900) {
-            // 15-minute intervals, 192 slots
-            pvData = data_request["ems"]["pv_prognose_wh"]
-                .slice(currentSlot)
-                .concat(data_request["ems"]["pv_prognose_wh"].slice(0, currentSlot))
-                .slice(0, 192)
-                .map(value => (value / 1000).toFixed(3));
-        } else {
-            // Hourly intervals, 48 slots
-            pvData = data_request["ems"]["pv_prognose_wh"]
-                .slice(currentHour)
-                .concat(data_request["ems"]["pv_prognose_wh"].slice(24, 48))
-                .map(value => (value / 1000).toFixed(3));
+        // Prefer the series the optimizer actually planned with: it covers the
+        // horizon extension past the two-day grid, which the request does not.
+        // No wrap-around here either - it would draw this morning's production as
+        // if it were the day after tomorrow.
+        let pvRaw = data_response["result"]["PV_forecast_Wh_pro_Stunde"];
+        if (!Array.isArray(pvRaw) || pvRaw.length === 0) {
+            pvRaw = time_frame_base === 900
+                ? data_request["ems"]["pv_prognose_wh"].slice(currentSlot)
+                : data_request["ems"]["pv_prognose_wh"].slice(currentHour);
         }
+        const pvData = pvRaw
+            .slice(0, data_response["result"]["Last_Wh_pro_Stunde"].length)
+            .map(value => (value / 1000).toFixed(3));
         // Color PV forecast bars: gold when dc_charge=1 (PV charges battery), standard orange otherwise
         // Only active when pv_battery_charge_control_enabled is set in config
         const pvChargeCtrlEnabled = data_controls["current_states"] &&

@@ -937,6 +937,13 @@ class EVOptBackend:
             "Verluste_Pro_Stunde": [float(x) for x in verluste_per_hour],
             "akku_soc_pro_stunde": akku_soc_pct if akku_soc_pct else [],
             "Electricity_price": pricing_data["electricity_price"],
+            # The PV series the optimizer actually planned with, including the
+            # horizon extension. The request carries only the two-day grid, so
+            # without this the chart's PV bars stop at midnight while the plan
+            # they explain runs on.
+            "PV_forecast_Wh_pro_Stunde": [
+                float(x) for x in (evopt.get("time_series", {}).get("ft") or [])[:n]
+            ],
             "EAuto_SoC_pro_Stunde": [],  # Placeholder
         }
 
