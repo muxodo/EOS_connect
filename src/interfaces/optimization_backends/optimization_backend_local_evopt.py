@@ -477,7 +477,11 @@ class LocalEVOptBackend(EVOptBackend):
         real_slots = list(self.pv_forecast_extension() or []) if self.pv_forecast_extension else []
         wanted = extension_hours * (3600 // self.time_frame_base)
         if len(real_slots) >= wanted:
-            morning_slots = real_slots[:wanted]
+            # Take everything the source offers, not just the six hours the
+            # synthetic pattern covers: the grid ends at midnight, so six hours
+            # stop before sunrise and carry none of the information this
+            # extension exists to provide.
+            morning_slots = real_slots
             logger.info(
                 "[OPT-LocalEVopt] Horizon extension from the real forecast "
                 "(%d slots, %.0f Wh total)",

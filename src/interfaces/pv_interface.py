@@ -73,8 +73,10 @@ def trim_forecast_padding(series):
 
 
 # How far past the two-day grid to keep a forecast, for the optimizer's own
-# horizon extension. Six hours matches what it would otherwise synthesise.
-PV_EXTENSION_SLOTS = 24
+# horizon extension. Twelve hours rather than six: the grid ends at local
+# midnight, so six would stop before dawn and tell the optimizer nothing about
+# the morning production it is supposed to plan around.
+PV_EXTENSION_SLOTS = 48
 
 
 class PvInterface:
