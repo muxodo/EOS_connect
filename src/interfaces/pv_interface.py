@@ -1593,13 +1593,19 @@ class PvInterface:
         # would otherwise invent that stretch from a fixed ramp. A real forecast
         # is available here for free - it was fetched in the same response and
         # only discarded by the alignment.
-        extension = [
-            round(lookup.get(midnight_today + timedelta(seconds=slot_seconds * i), 0.0), 1)
+        extension_keys = [
+            midnight_today + timedelta(seconds=slot_seconds * i)
             for i in range(expected_count, expected_count + PV_EXTENSION_SLOTS)
         ]
-        # All zeros means the source simply does not reach that far; saying so is
-        # different from forecasting darkness.
-        self.pv_forecast_extension = extension if any(v > 0 for v in extension) else []
+        # Presence of the keys, not their magnitude, decides whether the source
+        # reaches that far. These slots usually fall between midnight and dawn, so
+        # a correct forecast for them is a run of zeros - reading that as "no data"
+        # would discard the very answer we came for and fall back to a ramp that
+        # invents daylight in the middle of the night.
+        if all(key in lookup for key in extension_keys):
+            self.pv_forecast_extension = [round(lookup[key], 1) for key in extension_keys]
+        else:
+            self.pv_forecast_extension = []
 
         matched = sum(1 for key in slot_keys if key in lookup)
         if matched == 0 and lookup:
